@@ -157,33 +157,7 @@ export const createIonRouter = (
         ) {
           router.back();
         } else {
-          /**
-           * When going back to a child page of a tab
-           * after being on another tab, we need to use
-           * router.go() here instead of pushing or replacing.
-           * Consider the following example:
-           * /tabs/tab1 --> /tabs/tab1/child1 --> /tabs/tab1/child2
-           * --> /tabs/tab2 (via Tab 2 button) --> /tabs/tab1/child2 (via Tab 1 button)
-           *
-           * Pressing the ion-back-button on /tabs/tab1/child2 should take
-           * us back to /tabs/tab1/child1 not /tabs/tab2 because each tab
-           * is its own stack.
-           *
-           * If we called pressed the ion-back-button and this code called
-           * router.replace, then the state of /tabs/tab1/child2 would
-           * be replaced with /tabs/tab1/child1. However, this means that
-           * there would be two /tabs/tab1/child1 entries in the location
-           * history as the original /tabs/tab1/child1 entry is still there.
-           * As a result, clicking the ion-back-button on /tabs/tab1/child1 does
-           * nothing because this code would try to route to the same page
-           * we are currently on.
-           *
-           * If we called router.push instead then we would push a
-           * new /tabs/tab1/child1 entry to the location history. This
-           * is not good because we would have two /tabs/tab1/child1 entries
-           * separated by a /tabs/tab1/child2 entry.
-           */
-          router.go(prevInfo.position - routeInfo.position);
+          router.push({ path: prevInfo.pathname, query: parseQuery(prevInfo.search) });
         }
       } else {
         handleNavigate(defaultHref, "pop", "back", routerAnimation);
@@ -477,6 +451,10 @@ export const createIonRouter = (
         }
       } else {
         locationHistory.add(routeInfo);
+      }
+
+      if (routeInfo.routerAction === "pop") {
+          locationHistory.add(routeInfo);
       }
 
       /**
