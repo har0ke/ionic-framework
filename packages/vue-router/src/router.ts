@@ -618,6 +618,7 @@ export const createIonRouter = (
       ri.pushedByRoute = undefined;
       locationHistory.update(ri);
     }
+    locationHistory.logInfo("handleSetCurrentTab");
   };
 
   const registerHistoryChangeListener = (cb: any) => {
