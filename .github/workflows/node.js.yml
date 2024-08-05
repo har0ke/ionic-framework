@@ -34,3 +34,7 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         path: packages/vue-router/package
+    - name: Release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: packages/vue-router/ionic-vue-router-*.tgz
