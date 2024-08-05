@@ -38,5 +38,6 @@ jobs:
         path: packages/vue-router/package
     - name: Release
       uses: softprops/action-gh-release@v2
+      if: startsWith(github.ref, 'refs/tags/')
       with:
         files: packages/vue-router/ionic-vue-router-*.tgz
