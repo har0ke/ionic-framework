@@ -6,6 +6,8 @@ name: Node.js CI
 on:
   push:
     branches: [ "fix_tabs" ]
+    tags:
+      - "v*.*.*"
   pull_request:
     branches: [ "fix_tabs" ]
 
