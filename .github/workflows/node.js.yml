@@ -1,0 +1,36 @@
+# This workflow will do a clean installation of node dependencies, cache/restore them, build the source code and run tests across different versions of node
+# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-nodejs
+
+name: Node.js CI
+
+on:
+  push:
+    branches: [ "fix_tabs" ]
+  pull_request:
+    branches: [ "fix_tabs" ]
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        node-version: [18.x, 20.x, 22.x]
+        # See supported Node.js release schedule at https://nodejs.org/en/about/releases/
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Use Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ matrix.node-version }}
+        cache: 'npm'
+    - run: cd packages/vue-router; npm ci
+    - run: cd packages/vue-router; npm run build --if-present
+    - run: cd packages/vue-router; npm pack
+    - name: Archive production artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: package
+        path: packages/vue-router/ionic-vue-router-*.tgz
