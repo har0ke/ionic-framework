@@ -256,24 +256,26 @@ export const createLocationHistory = () => {
 
   const logInfo = (prefix: string) => {
     console.log("HISTORY START", prefix, window.location.pathname, window.history.state.position)
-    for (let i = locationHistory.length - 2; i >= 0; i--) {
+    for (let i = locationHistory.length - 1; i >= 0; i--) {
         console.log(
             "locationHistory".padStart(15),
-            locationHistory[i].tab.padStart(15),
+            String(locationHistory[i].tab).padStart(15),
             String(locationHistory[i].position).padStart(5),
             locationHistory[i].pathname.padStart(30),
             locationHistory[i].lastPathname.padStart(30),
+            String(locationHistory[i].pushedByRoute).padStart(30),
             locationHistory[i].routerAction.padStart(10));
     }
     Object.keys(tabsHistory).forEach((key) => {
 
-        for (let i = tabsHistory[key].length - 2; i >= 0; i--) {
+        for (let i = tabsHistory[key].length - 1; i >= 0; i--) {
             console.log(
                 key.padStart(15),
-                tabsHistory[key][i].tab.padStart(15),
+                String(tabsHistory[key][i].tab).padStart(15),
                 String(tabsHistory[key][i].position).padStart(5),
                 tabsHistory[key][i].pathname.padStart(30),
                 tabsHistory[key][i].lastPathname.padStart(30),
+                String(tabsHistory[key][i].pushedByRoute).padStart(30),
                 tabsHistory[key][i].routerAction.padStart(10));
         }
     })

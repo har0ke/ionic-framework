@@ -46,8 +46,10 @@ export const createIonRouter = (
       _: RouteLocationNormalized,
       failure?: NavigationFailure
     ) => {
-      if (failure) return;
-
+      if (failure)  {
+        incomingRouteParams = undefined;
+        return;
+      }
       const { direction, action, delta } = currentNavigationInfo;
 
       /**
@@ -91,7 +93,7 @@ export const createIonRouter = (
   if (typeof (document as any) !== "undefined") {
     document.addEventListener("ionBackButton", (ev: Event) => {
       (ev as any).detail.register(0, (processNextHandler: () => void) => {
-        opts.history.go(-1);
+        handleNavigateBack();
         processNextHandler();
       });
     });
@@ -155,14 +157,18 @@ export const createIonRouter = (
             !routeInfo.tab &&
             !prevInfo.tab)
         ) {
+          console.log("A");
           router.back();
         } else {
+          console.log("b");
           router.push({ path: prevInfo.pathname, query: parseQuery(prevInfo.search) });
         }
       } else {
+        console.log("c");
         handleNavigate(defaultHref, "pop", "back", routerAnimation);
       }
     } else {
+      console.log("d");
       handleNavigate(defaultHref, "pop", "back", routerAnimation);
     }
   };
@@ -504,7 +510,13 @@ export const createIonRouter = (
      */
     const routeInfo = locationHistory.getFirstRouteInfoForTab(tab);
     if (routeInfo) {
-      router.go(routeInfo.position - currentHistoryPosition);
+      incomingRouteParams = {
+        ...routeInfo,
+        routerAction: "pop",
+        routerDirection: "back",
+        routerAnimation: routeInfo.routerAnimation,
+      };
+      router.push({ path: routeInfo.pathname, query: parseQuery(routeInfo.search) });
     }
   };
 
