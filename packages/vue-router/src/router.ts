@@ -139,26 +139,7 @@ export const createIonRouter = (
           routerDirection: "back",
           routerAnimation: routerAnimation || routeInfo.routerAnimation,
         };
-        if (
-          routeInfo.lastPathname === routeInfo.pushedByRoute ||
-          /**
-           * We need to exclude tab switches/tab
-           * context changes here because tabbed
-           * navigation is not linear, but router.back()
-           * will go back in a linear fashion.
-           */
-          (prevInfo.pathname === routeInfo.pushedByRoute &&
-            /**
-             * Tab info can be undefined or '' (empty string)
-             * both are false-y values, so we can just use !.
-             */
-            !routeInfo.tab &&
-            !prevInfo.tab)
-        ) {
-          router.back();
-        } else {
           router.push({ path: prevInfo.pathname, query: parseQuery(prevInfo.search) });
-        }
       } else {
         handleNavigate(defaultHref, "pop", "back", routerAnimation);
       }
