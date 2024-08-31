@@ -256,6 +256,15 @@ export const createLocationHistory = () => {
 
   const logInfo = (prefix: string) => {
     console.log("HISTORY START", prefix, window.location.pathname, window.history.state.position)
+
+    console.log(
+      "locationHistory".padStart(15),
+      "TAB".padStart(15),
+      "POS".padStart(5),
+      "PATH".padStart(30),
+      "LAST_PATH".padStart(30),
+      "PUSHED_BY_ROUTE".padStart(30),
+      "R_ACTION".padStart(10));
     for (let i = locationHistory.length - 1; i >= 0; i--) {
         console.log(
             "locationHistory".padStart(15),
