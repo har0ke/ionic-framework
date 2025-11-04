@@ -3,6 +3,71 @@ import type { RouteInfo } from "./types";
 export const createLocationHistory = () => {
   const locationHistory: RouteInfo[] = [];
   const tabsHistory: { [k: string]: RouteInfo[] } = {};
+  const forEachTab = (cb: (tab: string, history: RouteInfo[]) => void) => {
+    for (const key in tabsHistory) {
+      const history = tabsHistory[key];
+      if (history) {
+        cb(key, history);
+      }
+    }
+  };
+
+  const serializeRoute = (routeInfo?: RouteInfo) => {
+    if (!routeInfo) return undefined;
+    const {
+      id,
+      pathname,
+      routerAction,
+      routerDirection,
+      tab,
+      position,
+      pushedByRoute,
+    } = routeInfo;
+    return {
+      id,
+      pathname,
+      routerAction,
+      routerDirection,
+      tab,
+      position,
+      pushedByRoute,
+    };
+  };
+
+  const isDefined = <T>(value: T | undefined): value is T => value !== undefined;
+
+  const snapshot = () => {
+    const tabs: { [k: string]: ReturnType<typeof serializeRoute>[] } = {};
+    forEachTab((tab, history) => {
+      tabs[tab] = history
+        .map((ri) => serializeRoute(ri))
+        .filter(isDefined);
+    });
+    return {
+      locationHistory: locationHistory
+        .map((ri) => serializeRoute(ri))
+        .filter(isDefined),
+      tabsHistory: tabs,
+    };
+  };
+
+  const describeRouteInfo = (routeInfo?: RouteInfo) => {
+    if (!routeInfo) return "route:none";
+    const action = routeInfo.routerAction || "unknown";
+    const path = routeInfo.pathname || "";
+    const tab = routeInfo.tab ?? "-";
+    const position =
+      typeof routeInfo.position === "number" ? routeInfo.position : "?";
+    return `${action} ${path} tab=${tab} pos=${position}`;
+  };
+
+  const logHistoryChange = (label: string, routeInfo?: RouteInfo) => {
+    if (typeof console === "undefined" || !console.debug) return;
+    console.debug(
+      `[LocationHistory] change:${label} ${describeRouteInfo(routeInfo)}`,
+      snapshot()
+    );
+  };
 
   const add = (routeInfo: RouteInfo) => {
     switch (routeInfo.routerAction) {
@@ -18,6 +83,7 @@ export const createLocationHistory = () => {
       clearHistory();
       addRoute(routeInfo);
     }
+
   };
 
   const update = (routeInfo: RouteInfo) => {
@@ -38,6 +104,8 @@ export const createLocationHistory = () => {
     } else if (routeInfo.tab) {
       tabsHistory[routeInfo.tab] = [routeInfo];
     }
+
+    logHistoryChange("update", routeInfo);
   };
 
   const pop = (routeInfo: RouteInfo) => {
@@ -63,6 +131,8 @@ export const createLocationHistory = () => {
     // Replace with updated route
     locationHistory.pop();
     locationHistory.push(routeInfo);
+
+    logHistoryChange("pop", routeInfo);
   };
 
   const addRoute = (routeInfo: RouteInfo) => {
@@ -78,6 +148,8 @@ export const createLocationHistory = () => {
       tabHistory.push(routeInfo);
     }
     locationHistory.push(routeInfo);
+
+    logHistoryChange("addRoute", routeInfo);
   };
 
   /**
@@ -146,6 +218,8 @@ export const createLocationHistory = () => {
 
       locationHistory.length = 0;
     }
+
+    logHistoryChange("clearHistory", routeInfo);
   };
   const getTabsHistory = (tab: string): RouteInfo[] => {
     let history;

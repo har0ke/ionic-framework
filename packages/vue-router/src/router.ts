@@ -25,6 +25,36 @@ export const createIonRouter = (
   opts: IonicVueRouterOptions,
   router: Router
 ) => {
+  const logRouter = (label: string, payload?: Record<string, unknown>) => {
+    if (typeof console === "undefined" || typeof console.debug !== "function") {
+      return;
+    }
+    if (payload !== undefined) {
+      console.info(`[LocationRouter] ${label}`, payload);
+    } else {
+      console.info(`[LocationRouter] ${label}`);
+    }
+  };
+
+  const describeRouteInfo = (ri?: RouteInfo) => {
+    if (!ri) return "route:none";
+    const action = ri.routerAction || "unknown";
+    const direction = ri.routerDirection || "none";
+    const path = ri.pathname || "";
+    const tab = ri.tab ?? "-";
+    const position =
+      typeof ri.position === "number" ? ri.position : "?";
+    return `${action} ${path} dir=${direction} tab=${tab} pos=${position}`;
+  };
+
+  const describeRouteParams = (params?: RouteParams) => {
+    if (!params) return "params:none";
+    const action = params.routerAction || "unknown";
+    const direction = params.routerDirection || "none";
+    const tab = params.tab ?? "-";
+    return `${action} dir=${direction} tab=${tab}`;
+  };
+
   let currentNavigationInfo: NavigationInformation = {
     direction: undefined,
     action: undefined,
@@ -62,6 +92,12 @@ export const createIonRouter = (
       currentHistoryPosition = opts.history.state.position as number;
 
       const replaceAction = opts.history.state.replaced ? "replace" : undefined;
+      logRouter("afterEach:dispatch", {
+        to: to.fullPath,
+        action: action || replaceAction,
+        direction,
+        delta,
+      });
       handleHistoryChange(to, action || replaceAction, direction, delta);
 
       currentNavigationInfo = {
@@ -130,6 +166,10 @@ export const createIonRouter = (
       initialHistoryPosition,
       currentHistoryPosition
     );
+    logRouter("handleNavigateBack:start", {
+      defaultHref,
+      current: describeRouteInfo(routeInfo),
+    });
     if (routeInfo && routeInfo.pushedByRoute) {
       const prevInfo = locationHistory.findLastLocation(routeInfo);
       if (prevInfo) {
@@ -186,9 +226,17 @@ export const createIonRouter = (
           router.go(prevInfo.position - routeInfo.position);
         }
       } else {
+        logRouter("handleNavigateBack:fallbackPrev", {
+          defaultHref,
+          current: describeRouteInfo(routeInfo),
+        });
         handleNavigate(defaultHref, "pop", "back", routerAnimation);
       }
     } else {
+      logRouter("handleNavigateBack:fallbackNoRoute", {
+        defaultHref,
+        current: describeRouteInfo(routeInfo),
+      });
       handleNavigate(defaultHref, "pop", "back", routerAnimation);
     }
   };
@@ -201,6 +249,16 @@ export const createIonRouter = (
     tab?: string
   ) => {
     setIncomingRouteParams(routerAction, routerDirection, routerAnimation, tab);
+    const target =
+      typeof path === "string"
+        ? path
+        : (path as any)?.path ?? JSON.stringify(path);
+    logRouter("handleNavigate", {
+      target,
+      action: routerAction,
+      direction: routerDirection,
+      tab,
+    });
 
     if (routerAction === "push") {
       router.push(path);
@@ -216,6 +274,13 @@ export const createIonRouter = (
     direction?: RouteDirection,
     delta?: number
   ) => {
+    logRouter("handleHistoryChange:start", {
+      to: location.fullPath,
+      action,
+      direction,
+      delta,
+      incoming: describeRouteParams(incomingRouteParams),
+    });
     let leavingLocationInfo: RouteInfo;
     if (incomingRouteParams) {
       /**
@@ -489,8 +554,15 @@ export const createIonRouter = (
       }
 
       currentRouteInfo = routeInfo;
+      logRouter("handleHistoryChange:resolved", {
+        route: describeRouteInfo(routeInfo),
+        leaving: describeRouteInfo(leavingLocationInfo),
+      });
     }
     incomingRouteParams = undefined;
+    logRouter("handleHistoryChange:complete", {
+      current: describeRouteInfo(currentRouteInfo),
+    });
     historyChangeListeners.forEach((cb) => cb(currentRouteInfo));
   };
 
@@ -507,6 +579,10 @@ export const createIonRouter = (
     const { routerAnimation, routerDirection, routerLink } = navigationOptions;
 
     setIncomingRouteParams("push", routerDirection, routerAnimation);
+    logRouter("navigate", {
+      routerLink,
+      params: describeRouteParams(incomingRouteParams),
+    });
 
     router.push(routerLink);
   };
@@ -526,6 +602,11 @@ export const createIonRouter = (
      */
     const routeInfo = locationHistory.getFirstRouteInfoForTab(tab);
     if (routeInfo) {
+      logRouter("resetTab", {
+        tab,
+        target: describeRouteInfo(routeInfo),
+        delta: routeInfo.position - currentHistoryPosition,
+      });
       router.go(routeInfo.position - currentHistoryPosition);
     }
   };
@@ -535,6 +616,11 @@ export const createIonRouter = (
 
     const routeInfo = locationHistory.getCurrentRouteInfoForTab(tab);
     const [pathname] = path.split("?");
+    logRouter("changeTab:start", {
+      tab,
+      requestedPath: pathname,
+      hasExisting: !!routeInfo,
+    });
 
     if (routeInfo) {
       incomingRouteParams = {
@@ -552,14 +638,26 @@ export const createIonRouter = (
        * tab you are on.
        */
       if (routeInfo.pathname === pathname) {
+        logRouter("changeTab:reuseStoredRoute", {
+          tab,
+          target: describeRouteInfo(routeInfo),
+        });
         router.push({
           path: routeInfo.pathname,
           query: parseQuery(routeInfo.search),
         });
       } else {
+        logRouter("changeTab:pushRequestedPath", {
+          tab,
+          targetPath: pathname,
+        });
         router.push({ path: pathname, query: parseQuery(routeInfo.search) });
       }
     } else {
+      logRouter("changeTab:noExistingRoute", {
+        tab,
+        targetPath: pathname,
+      });
       handleNavigate(pathname, "push", "none", undefined, tab);
     }
   };
@@ -588,6 +686,10 @@ export const createIonRouter = (
         currentHistoryPosition
       ),
     };
+    logRouter("handleSetCurrentTab:start", {
+      tab,
+      route: describeRouteInfo(ri),
+    });
 
     /**
      * handleHistoryChange is tabs-agnostic by design.
@@ -602,6 +704,10 @@ export const createIonRouter = (
     if (ri.tab !== tab) {
       ri.tab = tab;
       locationHistory.update(ri);
+      logRouter("handleSetCurrentTab:updateTab", {
+        tab,
+        route: describeRouteInfo(ri),
+      });
     }
 
     /**
@@ -639,6 +745,10 @@ export const createIonRouter = (
     if (ri.pushedByRoute !== ri.lastPathname && pushedByRoute?.tab !== tab) {
       ri.pushedByRoute = undefined;
       locationHistory.update(ri);
+      logRouter("handleSetCurrentTab:clearPushedByRoute", {
+        tab,
+        route: describeRouteInfo(ri),
+      });
     }
   };
 
@@ -658,15 +768,24 @@ export const createIonRouter = (
       routerAnimation,
       tab,
     };
+    logRouter("setIncomingRouteParams", {
+      params: describeRouteParams(incomingRouteParams),
+    });
   };
 
   const goBack = (routerAnimation?: AnimationBuilder) => {
     setIncomingRouteParams("pop", "back", routerAnimation);
+    logRouter("goBack", {
+      params: describeRouteParams(incomingRouteParams),
+    });
     router.back();
   };
 
   const goForward = (routerAnimation?: AnimationBuilder) => {
     setIncomingRouteParams("push", "forward", routerAnimation);
+    logRouter("goForward", {
+      params: describeRouteParams(incomingRouteParams),
+    });
     router.forward();
   };
 
