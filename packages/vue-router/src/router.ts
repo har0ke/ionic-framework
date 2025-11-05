@@ -59,6 +59,7 @@ export const createIonRouter = (
     direction: undefined,
     action: undefined,
     delta: undefined,
+    triggeredByBrowser: undefined,
   };
 
   /**
@@ -70,6 +71,7 @@ export const createIonRouter = (
    * which is fired once navigation is confirmed
    * and any user guards have run.
    */
+
   router.afterEach(
     (
       to: RouteLocationNormalized,
@@ -104,6 +106,7 @@ export const createIonRouter = (
         direction: undefined,
         action: undefined,
         delta: undefined,
+        triggeredByBrowser: undefined,
       };
     }
   );
@@ -155,6 +158,7 @@ export const createIonRouter = (
        */
       action: info.type === "pop" && info.delta >= 1 ? "push" : info.type,
       direction: info.direction === "" ? "forward" : info.direction,
+      triggeredByBrowser: info.type === "pop",
     };
   });
 
@@ -195,6 +199,74 @@ export const createIonRouter = (
       handleNavigate(defaultHref, "pop", "back", routerAnimation);
     }
   };
+
+  let suppressIntraTabPopGuard = false;
+
+  router.beforeEach((_to, _from, next) => {
+    logRouter("beforeEach:enter", {
+      suppress: suppressIntraTabPopGuard,
+      navAction: currentNavigationInfo.action,
+      browser: currentNavigationInfo.triggeredByBrowser,
+      delta: currentNavigationInfo.delta,
+      current: describeRouteInfo(currentRouteInfo),
+    });
+
+    if (suppressIntraTabPopGuard) {
+      logRouter("beforeEach:suppressReentry");
+      suppressIntraTabPopGuard = false;
+      next();
+      return;
+    }
+
+    if (currentNavigationInfo.triggeredByBrowser &&
+        (currentNavigationInfo.delta ?? 0) <= 0) {
+      const leavingRoute = locationHistory.current(
+        initialHistoryPosition,
+        currentHistoryPosition
+      );
+      logRouter("beforeEach:popCheck", {
+        leaving: describeRouteInfo(leavingRoute),
+      });
+      if (leavingRoute?.tab) {
+        const previousInTab = locationHistory.findLastLocation(leavingRoute);
+        if (!previousInTab) {
+          logRouter("beforeEach:blockBrowserPopNoHistory", {
+            leaving: describeRouteInfo(leavingRoute),
+          });
+          currentNavigationInfo.triggeredByBrowser = false;
+          next(false);
+          return;
+        }
+
+        if (previousInTab.tab === leavingRoute.tab) {
+          logRouter("beforeEach:interceptIntraTabPop", {
+            leaving: describeRouteInfo(leavingRoute),
+            target: describeRouteInfo(previousInTab),
+          });
+          suppressIntraTabPopGuard = true;
+          currentNavigationInfo.triggeredByBrowser = false;
+          incomingRouteParams = {
+            ...previousInTab,
+            routerAction: "pop",
+            routerDirection: "back",
+          };
+          next({
+            path: previousInTab.pathname,
+            query: parseQuery(previousInTab.search || ""),
+            replace: true,
+          });
+          return;
+        }
+        logRouter("beforeEach:allowedInSameTab", {
+          hasPrevious: !!previousInTab,
+          target: describeRouteInfo(previousInTab),
+        });
+      }
+      logRouter("beforeEach:popNotIntercepted");
+    }
+
+    next();
+  });
 
   const handleNavigate = (
     path: RouteLocationRaw,
