@@ -59,7 +59,6 @@ export const createIonRouter = (
     direction: undefined,
     action: undefined,
     delta: undefined,
-    triggeredByBrowser: undefined,
   };
 
   /**
@@ -106,12 +105,9 @@ export const createIonRouter = (
         direction: undefined,
         action: undefined,
         delta: undefined,
-        triggeredByBrowser: undefined,
       };
     }
   );
-
-  const locationHistory = createLocationHistory();
 
   /**
    * Keeping track of the history position
@@ -121,6 +117,8 @@ export const createIonRouter = (
    */
   let initialHistoryPosition = opts.history.state.position as number;
   let currentHistoryPosition = opts.history.state.position as number;
+
+  const locationHistory = createLocationHistory();
 
   let currentRouteInfo: RouteInfo;
   let incomingRouteParams: RouteParams;
@@ -138,15 +136,8 @@ export const createIonRouter = (
 
   opts.history.listen((_: any, _x: any, info: any) => {
     /**
-     * history.listen only fires on certain
-     * event such as when the user clicks the
-     * browser back button. It also gives us
-     * additional information as to the type
-     * of navigation (forward, backward, etc).
-     *
-     * We can use this to better handle the
-     * `handleHistoryChange` call in
-     * router.beforeEach
+     * Runs before Vue Router guards. Capture the navigation metadata emitted
+     * by the history implementation so the guard can reason about delta/action.
      */
     currentNavigationInfo = {
       delta: info.delta,
@@ -158,7 +149,6 @@ export const createIonRouter = (
        */
       action: info.type === "pop" && info.delta >= 1 ? "push" : info.type,
       direction: info.direction === "" ? "forward" : info.direction,
-      triggeredByBrowser: info.type === "pop",
     };
   });
 
@@ -174,6 +164,10 @@ export const createIonRouter = (
       defaultHref,
       current: describeRouteInfo(routeInfo),
     });
+    /**
+     * If the current view knows who pushed it, replay that relationship so
+     * Ionic's tab stack stays in sync with the browser state.
+     */
     if (routeInfo && routeInfo.pushedByRoute) {
       const prevInfo = locationHistory.findLastLocation(routeInfo);
       if (prevInfo) {
@@ -200,26 +194,19 @@ export const createIonRouter = (
     }
   };
 
-  let suppressIntraTabPopGuard = false;
-
   router.beforeEach((_to, _from, next) => {
+    // Snapshot the metadata emitted from the history listener for this guard run.
+    const navSnapshot = { ...currentNavigationInfo };
     logRouter("beforeEach:enter", {
-      suppress: suppressIntraTabPopGuard,
-      navAction: currentNavigationInfo.action,
-      browser: currentNavigationInfo.triggeredByBrowser,
-      delta: currentNavigationInfo.delta,
+      navAction: navSnapshot.action,
+      delta: navSnapshot.delta,
       current: describeRouteInfo(currentRouteInfo),
     });
 
-    if (suppressIntraTabPopGuard) {
-      logRouter("beforeEach:suppressReentry");
-      suppressIntraTabPopGuard = false;
-      next();
-      return;
-    }
-
-    if (currentNavigationInfo.triggeredByBrowser &&
-        (currentNavigationInfo.delta ?? 0) <= 0) {
+    // Only intercept browser-driven back/forward (delta <= 0 means back).
+    const isBrowserPop = incomingRouteParams === undefined;
+    const delta = navSnapshot.delta;
+    if (isBrowserPop && delta !== undefined && delta < 0) {
       const leavingRoute = locationHistory.current(
         initialHistoryPosition,
         currentHistoryPosition
@@ -230,10 +217,10 @@ export const createIonRouter = (
       if (leavingRoute?.tab) {
         const previousInTab = locationHistory.findLastLocation(leavingRoute);
         if (!previousInTab) {
+          // No stack history for this tab; leave user on the root view.
           logRouter("beforeEach:blockBrowserPopNoHistory", {
             leaving: describeRouteInfo(leavingRoute),
           });
-          currentNavigationInfo.triggeredByBrowser = false;
           next(false);
           return;
         }
@@ -243,13 +230,12 @@ export const createIonRouter = (
             leaving: describeRouteInfo(leavingRoute),
             target: describeRouteInfo(previousInTab),
           });
-          suppressIntraTabPopGuard = true;
-          currentNavigationInfo.triggeredByBrowser = false;
           incomingRouteParams = {
             ...previousInTab,
             routerAction: "pop",
             routerDirection: "back",
           };
+          // Using replace=true keeps the browser pointer aligned with the tab.
           next({
             path: previousInTab.pathname,
             query: parseQuery(previousInTab.search || ""),
@@ -261,10 +247,15 @@ export const createIonRouter = (
           hasPrevious: !!previousInTab,
           target: describeRouteInfo(previousInTab),
         });
+      } else {
+        logRouter("beforeEach:nonTabPop", {
+          leaving: describeRouteInfo(leavingRoute),
+        });
       }
       logRouter("beforeEach:popNotIntercepted");
     }
 
+    logRouter("beforeEach:fallthrough");
     next();
   });
 
