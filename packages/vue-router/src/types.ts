@@ -91,4 +91,5 @@ export interface NavigationInformation {
   action?: RouteAction;
   direction?: RouteDirection;
   delta?: number;
+  triggeredByBrowser?: boolean;
 }

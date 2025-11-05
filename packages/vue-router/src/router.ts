@@ -29,6 +29,7 @@ export const createIonRouter = (
     direction: undefined,
     action: undefined,
     delta: undefined,
+    triggeredByBrowser: undefined,
   };
 
   /**
@@ -40,6 +41,7 @@ export const createIonRouter = (
    * which is fired once navigation is confirmed
    * and any user guards have run.
    */
+
   router.afterEach(
     (
       to: RouteLocationNormalized,
@@ -68,6 +70,7 @@ export const createIonRouter = (
         direction: undefined,
         action: undefined,
         delta: undefined,
+        triggeredByBrowser: undefined,
       };
     }
   );
@@ -119,6 +122,7 @@ export const createIonRouter = (
        */
       action: info.type === "pop" && info.delta >= 1 ? "push" : info.type,
       direction: info.direction === "" ? "forward" : info.direction,
+      triggeredByBrowser: info.type === "pop",
     };
   });
 
@@ -147,6 +151,50 @@ export const createIonRouter = (
       handleNavigate(defaultHref, "pop", "back", routerAnimation);
     }
   };
+
+  let suppressIntraTabPopGuard = false;
+
+  router.beforeEach((_to, _from, next) => {
+    if (suppressIntraTabPopGuard) {
+      suppressIntraTabPopGuard = false;
+      next();
+      return;
+    }
+
+    if (currentNavigationInfo.triggeredByBrowser &&
+        (currentNavigationInfo.delta ?? 0) <= 0) {
+      const leavingRoute = locationHistory.current(
+        initialHistoryPosition,
+        currentHistoryPosition
+      );
+      if (leavingRoute?.tab) {
+        const previousInTab = locationHistory.findLastLocation(leavingRoute);
+        if (!previousInTab) {
+          currentNavigationInfo.triggeredByBrowser = false;
+          next(false);
+          return;
+        }
+
+        if (previousInTab.tab === leavingRoute.tab) {
+          suppressIntraTabPopGuard = true;
+          currentNavigationInfo.triggeredByBrowser = false;
+          incomingRouteParams = {
+            ...previousInTab,
+            routerAction: "pop",
+            routerDirection: "back",
+          };
+          next({
+            path: previousInTab.pathname,
+            query: parseQuery(previousInTab.search || ""),
+            replace: true,
+          });
+          return;
+        }
+      }
+    }
+
+    next();
+  });
 
   const handleNavigate = (
     path: RouteLocationRaw,
