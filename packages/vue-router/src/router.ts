@@ -137,7 +137,7 @@ export const createIonRouter = (
           routerDirection: "back",
           routerAnimation: routerAnimation || routeInfo.routerAnimation,
         };
-          router.push({ path: prevInfo.pathname, query: parseQuery(prevInfo.search) });
+        router.push({ path: prevInfo.pathname, query: parseQuery(prevInfo.search) });
       } else {
         handleNavigate(defaultHref, "pop", "back", routerAnimation);
       }
@@ -222,9 +222,13 @@ export const createIonRouter = (
           currentHistoryPosition
         );
       } else if (incomingRouteParams.routerAction === "pop") {
+        const leavingPosition =
+          delta !== undefined && delta < 0
+            ? currentHistoryPosition - delta
+            : currentHistoryPosition + 1;
         leavingLocationInfo = locationHistory.current(
           initialHistoryPosition,
-          currentHistoryPosition + 1
+          leavingPosition
         );
 
         /**
@@ -471,10 +475,6 @@ export const createIonRouter = (
         locationHistory.add(routeInfo);
       }
 
-      if (routeInfo.routerAction === "pop") {
-          locationHistory.add(routeInfo);
-      }
-
       /**
        * If we recently reset the location history
        * then we also need to update the initial
@@ -507,7 +507,7 @@ export const createIonRouter = (
     router.push(routerLink);
   };
 
-  const resetTab = (tab: string) => {
+  const resetTab = (tab: string, defaultHref?: string) => {
     /**
      * Resetting the tab should go back
      * to the initial view in the tab stack.
@@ -520,9 +520,22 @@ export const createIonRouter = (
      * we call router.go() to move us back the
      * appropriate number of positions.
      */
-    const routeInfo = locationHistory.getFirstRouteInfoForTab(tab);
-    if (routeInfo) {
-      router.go(routeInfo.position - currentHistoryPosition);
+    const firstRouteInfo = locationHistory.getFirstRouteInfoForTab(tab);
+    if (firstRouteInfo) {
+      const routeUrl = firstRouteInfo.pathname + (firstRouteInfo.search || "");
+      if (!defaultHref || defaultHref === routeUrl) {
+        incomingRouteParams = {
+          ...firstRouteInfo,
+          routerAction: "pop",
+          routerDirection: "back",
+          routerAnimation: firstRouteInfo.routerAnimation,
+        };
+        router.push({ path: firstRouteInfo.pathname, query: parseQuery(firstRouteInfo.search) });
+        return;
+      }
+    }
+    if (defaultHref) {
+      handleNavigate(defaultHref, "pop", "back", undefined, tab);
     }
   };
 
