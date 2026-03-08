@@ -101,16 +101,12 @@ export interface NavigationInformation {
  * to compile while the rewrite is developed in parallel.
  */
 
-export type UnmatchedBehavior = "default" | "active";
-
 export interface ContextConfig {
   clearOnExternalPush: boolean;
-  unmatchedBehavior: UnmatchedBehavior;
 }
 
 export interface PushOptions {
   // Push-time overrides (consumed, not stored)
-  unmatchedBehavior?: UnmatchedBehavior;
   clearOnExternalPush?: boolean;
 
   // Navigation metadata

@@ -3,7 +3,6 @@ import type { ContextConfig } from "../src/types";
 
 const tabConfig: ContextConfig = {
   clearOnExternalPush: false,
-  unmatchedBehavior: "default",
 };
 
 describe("Context History (registry + matching)", () => {

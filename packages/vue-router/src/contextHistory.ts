@@ -16,12 +16,10 @@ const DEFAULT_CONTEXT_ID = "default" as const;
 
 const DEFAULT_CONTEXT_CONFIG: ContextConfig = {
   clearOnExternalPush: true,
-  unmatchedBehavior: "default",
 };
 
 const TAB_CONTEXT_CONFIG: ContextConfig = {
   clearOnExternalPush: false,
-  unmatchedBehavior: "default",
 };
 
 type ContextRegistration = {
@@ -36,22 +34,11 @@ type RouteMetadata = {
 
 type RouteInput = string | (RouteMetadata & { pathname: string });
 
-export type MatchContextOptions = {
-  /**
-   * Optional override for how unmatched routes are handled.
-   *
-   * Note: Phase 1, Chunk A always resolves unmatched routes to the default
-   * context. Active-context handling is implemented in later chunks.
-   */
-  unmatchedBehavior?: UnmatchedBehavior;
-};
-
 /**
- * Creates a context-history registry that can:
- * - register named navigation contexts by pathname prefix
- * - resolve a pathname to the best matching context
+ * Creates a context-history manager with named navigation context stacks.
  *
- * Phase 1, Chunk A scope: registry + matching only.
+ * Context matching uses longest registered prefix; unmatched routes always
+ * go to the default context.
  */
 export const createContextHistory = () => {
   const registrations = new Map<string, ContextRegistration>();
@@ -180,7 +167,13 @@ export const createContextHistory = () => {
     });
   };
 
-  const matchContext = (pathname: string, options?: MatchContextOptions): string => {
+  /**
+   * Resolve a pathname to its best matching context ID.
+   *
+   * Uses longest registered prefix match. If nothing matches, returns
+   * the default context.
+   */
+  const matchContext = (pathname: string): string => {
     let bestMatchId: string | undefined;
     let bestMatchPrefixLength = -1;
 
@@ -200,14 +193,7 @@ export const createContextHistory = () => {
       }
     }
 
-    if (bestMatchId) {
-      return bestMatchId;
-    }
-
-    const active = ensureContextStack(activeContext);
-    const effectiveUnmatchedBehavior = options?.unmatchedBehavior ?? active.config.unmatchedBehavior;
-
-    return effectiveUnmatchedBehavior === "active" ? activeContext : DEFAULT_CONTEXT_ID;
+    return bestMatchId ?? DEFAULT_CONTEXT_ID;
   };
 
   const currentEntry = (): NavEntry | undefined => {
@@ -245,9 +231,7 @@ export const createContextHistory = () => {
     metadata?: RouteMetadata
   ): NavEntry => {
     const parsed = parseRouteInput(route, metadata);
-    const targetContext = matchContext(parsed.pathname, {
-      unmatchedBehavior: options?.unmatchedBehavior,
-    });
+    const targetContext = matchContext(parsed.pathname);
 
     const previousActiveContext = activeContext;
     const isCrossContextPush = targetContext !== previousActiveContext;
@@ -281,9 +265,7 @@ export const createContextHistory = () => {
     metadata?: RouteMetadata
   ): NavEntry => {
     const parsed = parseRouteInput(route, metadata);
-    const targetContext = matchContext(parsed.pathname, {
-      unmatchedBehavior: options?.unmatchedBehavior,
-    });
+    const targetContext = matchContext(parsed.pathname);
 
     if (targetContext !== activeContext) {
       return push(parsed, options);
