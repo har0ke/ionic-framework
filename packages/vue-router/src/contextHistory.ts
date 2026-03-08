@@ -609,18 +609,6 @@ export const createContextHistory = () => {
     };
   };
 
-  const deriveTabPrefix = (tab: string, currentPathname: string): string => {
-    const pathname = currentPathname.split("?", 1)[0];
-    const segments = pathname.split("/").filter(Boolean);
-    const tabSegmentIndex = segments.indexOf(tab);
-
-    if (tabSegmentIndex === -1) {
-      return normalizePrefix(pathname || "/");
-    }
-
-    return normalizePrefix(`/${segments.slice(0, tabSegmentIndex + 1).join("/")}`);
-  };
-
   const migrateDefaultEntriesToTab = (tab: string): void => {
     const registration = registrations.get(tab);
     if (!registration) {
@@ -678,12 +666,12 @@ export const createContextHistory = () => {
     }
   };
 
-  const ensureTabRegistration = (tab: string, currentPathname: string): void => {
+  const ensureTabRegistration = (tab: string, href: string): void => {
     if (registrations.has(tab)) {
       return;
     }
 
-    const prefix = deriveTabPrefix(tab, currentPathname);
+    const prefix = normalizePrefix(href.split("?", 1)[0]);
     registerContext(tab, prefix, TAB_CONTEXT_CONFIG);
     migrateDefaultEntriesToTab(tab);
   };
@@ -693,20 +681,16 @@ export const createContextHistory = () => {
    * root href for fallback-to-default back navigation.
    *
    * @param tab - Tab context identifier (e.g. "feed")
-   * @param currentPathname - Current route pathname (used to derive the prefix
-   *   for context matching on first registration)
-   * @param rootHref - The tab button's original href (e.g. "/tabs/feed/").
-   *   This is the source of truth for where back falls back to when the
-   *   cursor reaches 0 in this tab context.
+   * @param rootHref - The tab button's original href (e.g. "/tabs/feed").
+   *   Used as both the prefix for context matching and the fallback target
+   *   when back reaches cursor 0 in this tab context.
    */
-  const handleSetCurrentTab = (tab: string, currentPathname: string, rootHref?: string): void => {
-    ensureTabRegistration(tab, currentPathname);
+  const handleSetCurrentTab = (tab: string, rootHref: string): void => {
+    ensureTabRegistration(tab, rootHref);
 
-    if (rootHref !== undefined) {
-      const stack = contexts.get(tab);
-      if (stack) {
-        stack.rootHref = rootHref;
-      }
+    const stack = contexts.get(tab);
+    if (stack) {
+      stack.rootHref = rootHref;
     }
   };
 

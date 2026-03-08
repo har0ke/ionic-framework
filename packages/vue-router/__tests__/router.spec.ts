@@ -385,7 +385,7 @@ describe("createIonRouter integration", () => {
     expect(h.nav.getLeavingRouteInfo()?.pathname).toBe("/tabs/feed");
     expect(h.nav.canGoBack()).toBe(true);
 
-    h.nav.handleSetCurrentTab("feed");
+    h.nav.handleSetCurrentTab("feed", "/tabs/feed");
 
     const snapshot = h.nav.getContextSnapshot();
     expect(snapshot.contexts.feed).toBeDefined();
@@ -401,7 +401,7 @@ describe("createIonRouter integration", () => {
 
     h.nav.handleNavigate("/tabs/feed", "push", "forward");
     h.commitNavigation("/tabs/feed");
-    h.nav.handleSetCurrentTab("feed");
+    h.nav.handleSetCurrentTab("feed", "/tabs/feed");
 
     h.nav.changeTab("feed", "/tabs/feed");
     expect(h.router.push).toHaveBeenLastCalledWith("/tabs/feed");
