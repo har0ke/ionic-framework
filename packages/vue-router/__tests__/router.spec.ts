@@ -296,7 +296,7 @@ describe("createIonRouter integration", () => {
     }
   });
 
-  it("does not roll back delegated back after browser interception abort", () => {
+  it("browser interception abort does not clear the re-dispatched plan", () => {
     const h = createRouterHarness("/");
 
     h.nav.handleNavigate("/a", "push", "forward");
@@ -317,7 +317,7 @@ describe("createIonRouter integration", () => {
     expect(h.nav.canGoForward()).toBe(true);
   });
 
-  it("rolls back aborted pre-mutations and keeps pending on cancellation", () => {
+  it("aborted plan has no effect; cancelled plan is kept for successor", () => {
     const h = createRouterHarness("/");
 
     h.nav.handleNavigate("/a", "push", "forward");

@@ -12,13 +12,20 @@ import type {
   CurrentRouteInfo,
   ExternalNavigationOptions,
   IonicVueRouterOptions,
-  NavigationContext,
+  PreparedPlan,
   RouteAction,
   RouteDirection,
   RouteInfo,
 } from "./types";
 
-type PendingNavigationContext = NavigationContext & {
+type PendingNavigation = {
+  plan: PreparedPlan;
+  animation?: AnimationBuilder;
+};
+
+type PendingExternalHint = {
+  direction?: RouteDirection;
+  animation?: AnimationBuilder;
   action?: RouteAction;
 };
 
@@ -51,7 +58,11 @@ export const createIonRouter = (
 
   let pendingBrowserDelta: number | null = null;
   let browserInterceptionInFlight = false;
-  let pending: PendingNavigationContext | null = null;
+
+  // Pending state: either a prepared plan (Ionic-initiated) or an external
+  // hint (handleNavigate direction/animation).
+  let pendingPlan: PendingNavigation | null = null;
+  let pendingHint: PendingExternalHint | null = null;
 
   let currentRouteInfo: CurrentRouteInfo | undefined;
   let leavingRouteInfo: CurrentRouteInfo | undefined;
@@ -59,14 +70,11 @@ export const createIonRouter = (
   const historyChangeListeners: Array<() => void> = [];
   const warnedTraversalMethods = new Set<string>();
 
-  const setPending = (ctx: PendingNavigationContext): void => {
-    pending = ctx;
-  };
-
-  const readAndClearPending = (): PendingNavigationContext | null => {
-    const value = pending;
-    pending = null;
-    return value;
+  const clearPending = (): { plan: PendingNavigation | null; hint: PendingExternalHint | null } => {
+    const result = { plan: pendingPlan, hint: pendingHint };
+    pendingPlan = null;
+    pendingHint = null;
+    return result;
   };
 
   const notifyHistoryChange = (): void => {
@@ -95,29 +103,86 @@ export const createIonRouter = (
     );
   };
 
-  const go = (delta: number, routerAnimation?: AnimationBuilder) => {
-    const snapshot = contextHistory.captureState();
-    const target = contextHistory.go(delta);
-
-    if (target === null) {
+  /**
+   * If a prepared plan is already pending (from a previous navigation that
+   * hasn't been confirmed by afterEach yet), speculatively commit it so that
+   * subsequent prepare calls see the mutated state.
+   *
+   * This handles rapid-fire navigations (e.g. goBack() called twice before
+   * the first afterEach fires). The speculative commit uses the plan's own
+   * target as the resolved payload since the actual resolved route isn't
+   * available yet.
+   */
+  const speculativelyCommitPending = (): void => {
+    if (pendingPlan === null) {
       return;
     }
 
-    setPending({
-      direction: delta < 0 ? "back" : "forward",
-      animation: routerAnimation,
-      snapshot,
-    });
+    const { plan } = pendingPlan;
+    const [pathname, query = ""] = plan.target.split("?", 2);
+    plan.commit({ pathname, search: query });
 
-    router.replace(target);
+    // Produce route info from the speculative commit so currentRouteInfo
+    // stays consistent.
+    const entering = contextHistory.currentEntry();
+    if (entering) {
+      const leaving = currentRouteInfo;
+      currentRouteInfo = contextHistory.produceCurrentRouteInfo(
+        entering,
+        leaving,
+        {
+          direction: plan.direction,
+          action: plan.action,
+          animation: pendingPlan.animation ?? plan.animation,
+        }
+      );
+      leavingRouteInfo = leaving;
+    }
+
+    pendingPlan = null;
+  };
+
+  /**
+   * Execute a prepared plan: store it as pending and dispatch the router call.
+   */
+  const executePlan = (plan: PreparedPlan, animation?: AnimationBuilder): void => {
+    pendingPlan = { plan, animation: animation ?? plan.animation };
+
+    if (plan.transport === "replace") {
+      router.replace(plan.target);
+    } else {
+      router.push(plan.target);
+    }
+  };
+
+  const go = (delta: number, routerAnimation?: AnimationBuilder) => {
+    speculativelyCommitPending();
+    const plan = contextHistory.prepareGo(delta);
+    if (plan === null) {
+      return;
+    }
+
+    executePlan(plan, routerAnimation);
   };
 
   const goBack = (routerAnimation?: AnimationBuilder) => {
-    go(-1, routerAnimation);
+    speculativelyCommitPending();
+    const plan = contextHistory.prepareBack();
+    if (plan === null) {
+      return;
+    }
+
+    executePlan(plan, routerAnimation);
   };
 
   const goForward = (routerAnimation?: AnimationBuilder) => {
-    go(1, routerAnimation);
+    speculativelyCommitPending();
+    const plan = contextHistory.prepareForward();
+    if (plan === null) {
+      return;
+    }
+
+    executePlan(plan, routerAnimation);
   };
 
   // HACK: Vue Router's raw history traversal methods use the native session
@@ -138,12 +203,12 @@ export const createIonRouter = (
 
   router.back = () => {
     warnPatchedTraversalMethod("back");
-    go(-1);
+    goBack();
   };
 
   router.forward = () => {
     warnPatchedTraversalMethod("forward");
-    go(1);
+    goForward();
   };
 
   opts.history.listen((_to: any, _from: any, info: any) => {
@@ -175,17 +240,23 @@ export const createIonRouter = (
           browserInterceptionInFlight &&
           failure.type === NavigationFailureType.aborted
         ) {
+          // Browser interception abort: the beforeEach already called
+          // next(false) and re-dispatched via go(delta). The pending plan
+          // was set by go() AFTER next(false), so do NOT clear it — the
+          // next successful afterEach will consume it.
           browserInterceptionInFlight = false;
           return;
         }
 
         if (failure.type === NavigationFailureType.aborted) {
-          const failedPending = readAndClearPending();
-          if (failedPending?.snapshot) {
-            contextHistory.restoreState(failedPending.snapshot);
-          }
-        } else if (failure.type !== NavigationFailureType.cancelled) {
-          readAndClearPending();
+          // No rollback needed: prepare+commit means no state was mutated.
+          clearPending();
+        } else if (failure.type === NavigationFailureType.cancelled) {
+          // Cancelled navigations may be followed by the navigation that
+          // replaced them; keep pending state so it can be consumed by the
+          // next afterEach.
+        } else {
+          clearPending();
         }
 
         return;
@@ -193,9 +264,10 @@ export const createIonRouter = (
 
       browserInterceptionInFlight = false;
 
-      const navContext = readAndClearPending();
+      const { plan: consumedPlan, hint: consumedHint } = clearPending();
       const leaving = currentRouteInfo;
 
+      // Deduplicate: if the resolved URL matches the current route, skip.
       if (
         leaving !== undefined &&
         routeInfoToComparablePath(leaving) === toComparablePath(to)
@@ -204,23 +276,38 @@ export const createIonRouter = (
         return;
       }
 
-      if (navContext?.snapshot) {
-        const entering = contextHistory.currentEntry();
-        if (!entering) {
+      // ── Prepared plan path ──────────────────────────────────────────
+      if (consumedPlan !== null) {
+        const resolvedPath = toComparablePath(to);
+
+        if (resolvedPath === consumedPlan.plan.expectedComparableTarget) {
+          // Plan matches: commit to mutate context history state.
+          const resolvedPayload = {
+            pathname: to.path,
+            search: getSearchFromFullPath(to.fullPath),
+            params: to.params as Record<string, any> | undefined,
+          };
+
+          const entering = consumedPlan.plan.commit(resolvedPayload);
+          currentRouteInfo = contextHistory.produceCurrentRouteInfo(
+            entering,
+            leaving,
+            {
+              direction: consumedPlan.plan.direction,
+              action: consumedPlan.plan.action,
+              animation: consumedPlan.animation ?? consumedPlan.plan.animation,
+            }
+          );
+          leavingRouteInfo = leaving;
           notifyHistoryChange();
           return;
         }
 
-        currentRouteInfo = contextHistory.produceCurrentRouteInfo(
-          entering,
-          leaving,
-          navContext
-        );
-        leavingRouteInfo = leaving;
-        notifyHistoryChange();
-        return;
+        // Plan does not match resolved route (e.g. guard redirect).
+        // Fall through to external navigation path below.
       }
 
+      // ── External / unplanned navigation path ────────────────────────
       const inferredAction: RouteAction = opts.history.state.replaced
         ? "replace"
         : "push";
@@ -234,18 +321,16 @@ export const createIonRouter = (
       const entering =
         inferredAction === "replace"
           ? contextHistory.replace(routePayload, {
-              routerAnimation: navContext?.animation,
+              routerAnimation: consumedHint?.animation,
             })
           : contextHistory.push(routePayload, {
-              routerAnimation: navContext?.animation,
+              routerAnimation: consumedHint?.animation,
             });
 
-      // Use the pending context's action if available (e.g. "pop" for back
-      // navigations that fall through to default), otherwise derive from
-      // the router's replaced state.
       currentRouteInfo = contextHistory.produceCurrentRouteInfo(entering, leaving, {
-        ...navContext,
-        action: navContext?.action ?? inferredAction,
+        direction: consumedHint?.direction,
+        animation: consumedHint?.animation,
+        action: consumedHint?.action ?? inferredAction,
       });
 
       leavingRouteInfo = leaving;
@@ -257,29 +342,11 @@ export const createIonRouter = (
     defaultHref?: string,
     routerAnimation?: AnimationBuilder
   ) => {
-    const snapshot = contextHistory.captureState();
-    const target = contextHistory.performBack(defaultHref);
+    speculativelyCommitPending();
+    const plan = contextHistory.prepareBack(defaultHref, routerAnimation);
 
-    if (target !== null) {
-      // Check whether performBack did a cursor move (entry exists at new
-      // position) or a fallback-to-default (cursor stayed at 0, target is a
-      // synthetic default). If the current entry's path matches the target,
-      // it was a cursor move → use snapshot path. Otherwise it was a fallback
-      // → omit snapshot so afterEach processes it as a regular replace.
-      const entry = contextHistory.currentEntry();
-      const entryPath = entry
-        ? (entry.search ? `${entry.pathname}?${entry.search}` : entry.pathname)
-        : undefined;
-      const isCursorMove = entryPath === target;
-
-      setPending({
-        direction: "back",
-        action: "pop",
-        animation: routerAnimation,
-        ...(isCursorMove ? { snapshot } : {}),
-      });
-
-      router.replace(target);
+    if (plan !== null) {
+      executePlan(plan, routerAnimation);
       return;
     }
 
@@ -294,10 +361,11 @@ export const createIonRouter = (
     routerAnimation?: AnimationBuilder,
     _tab?: string
   ) => {
-    setPending({
+    speculativelyCommitPending();
+    pendingHint = {
       direction: routerDirection,
       animation: routerAnimation,
-    });
+    };
 
     if (routerAction === "replace") {
       router.replace(path);
@@ -323,43 +391,25 @@ export const createIonRouter = (
       return;
     }
 
-    const snapshot = contextHistory.captureState();
-    const target = contextHistory.changeTab(tab, path);
-
-    setPending({
-      direction: "none",
-      snapshot,
-    });
-
-    router.push(target);
+    speculativelyCommitPending();
+    const plan = contextHistory.prepareChangeTab(tab, path);
+    executePlan(plan);
   };
 
   const resetTab = (tab: string, defaultHref?: string) => {
-    const snapshot = contextHistory.captureState();
-    const target = contextHistory.resetTab(tab, defaultHref);
-
-    if (target === null) {
+    speculativelyCommitPending();
+    const plan = contextHistory.prepareResetTab(tab, defaultHref);
+    if (plan === null) {
       return;
     }
 
-    setPending({
-      direction: "back",
-      snapshot,
-    });
-
-    router.replace(target);
+    executePlan(plan);
   };
 
   const resetAll = (redirectTo: string) => {
-    const snapshot = contextHistory.captureState();
-    const target = contextHistory.resetAll(redirectTo);
-
-    setPending({
-      direction: "root",
-      snapshot,
-    });
-
-    router.replace(target);
+    speculativelyCommitPending();
+    const plan = contextHistory.prepareResetAll(redirectTo);
+    executePlan(plan);
   };
 
   const getCurrentRouteInfo = (): RouteInfo | undefined => currentRouteInfo;
