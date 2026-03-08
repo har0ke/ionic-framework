@@ -130,6 +130,12 @@ export interface ContextStack {
   entries: NavEntry[];
   cursor: number;
   config: ContextConfig;
+  /**
+   * The explicit root route for this context, sourced from IonTabButton.href.
+   * Used as the fallback target when back reaches cursor 0. Only set for
+   * tab contexts; default context has rootHref undefined.
+   */
+  rootHref: string | undefined;
 }
 
 export interface SavedEntries {

@@ -56,6 +56,7 @@ export const createContextHistory = () => {
     entries: [],
     cursor: 0,
     config: DEFAULT_CONTEXT_CONFIG,
+    rootHref: undefined,
   });
 
   const normalizePrefix = (prefix: string): string => {
@@ -89,6 +90,7 @@ export const createContextHistory = () => {
       entries: [],
       cursor: 0,
       config: registration.config,
+      rootHref: undefined,
     };
 
     contexts.set(id, created);
@@ -164,6 +166,7 @@ export const createContextHistory = () => {
       entries: [],
       cursor: 0,
       config,
+      rootHref: undefined,
     });
   };
 
@@ -638,8 +641,26 @@ export const createContextHistory = () => {
     migrateDefaultEntriesToTab(tab);
   };
 
-  const handleSetCurrentTab = (tab: string, currentPathname: string): void => {
+  /**
+   * Register a tab context if not already registered, and store the tab's
+   * root href for fallback-to-default back navigation.
+   *
+   * @param tab - Tab context identifier (e.g. "feed")
+   * @param currentPathname - Current route pathname (used to derive the prefix
+   *   for context matching on first registration)
+   * @param rootHref - The tab button's original href (e.g. "/tabs/feed/").
+   *   This is the source of truth for where back falls back to when the
+   *   cursor reaches 0 in this tab context.
+   */
+  const handleSetCurrentTab = (tab: string, currentPathname: string, rootHref?: string): void => {
     ensureTabRegistration(tab, currentPathname);
+
+    if (rootHref !== undefined) {
+      const stack = contexts.get(tab);
+      if (stack) {
+        stack.rootHref = rootHref;
+      }
+    }
   };
 
   /**

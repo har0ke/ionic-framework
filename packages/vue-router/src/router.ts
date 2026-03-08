@@ -362,9 +362,16 @@ export const createIonRouter = (
 
   const canGoForward = (deep = 1): boolean => contextHistory.canGoForward(deep);
 
-  const handleSetCurrentTab = (tab: string) => {
+  /**
+   * Register a tab context and store its root href for back-fallback.
+   *
+   * @param tab - Tab context identifier
+   * @param rootHref - Optional: the tab button's original href (source of
+   *   truth for where back falls back to at cursor 0). Passed from IonTabBar.
+   */
+  const handleSetCurrentTab = (tab: string, rootHref?: string) => {
     const currentPathname = currentRouteInfo?.pathname ?? router.currentRoute.value.path;
-    contextHistory.handleSetCurrentTab(tab, currentPathname);
+    contextHistory.handleSetCurrentTab(tab, currentPathname, rootHref);
   };
 
   const registerHistoryChangeListener = (cb: () => void) => {

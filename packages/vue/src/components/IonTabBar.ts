@@ -232,7 +232,11 @@ export const IonTabBar = defineComponent({
           tabDidChange && this.$data._tabsWillChange(activeTab);
 
           if (hasRouterOutlet && ionRouter !== null) {
-            ionRouter.handleSetCurrentTab(activeTab);
+            // Pass the active tab button's original href as the root href
+            // for fallback-to-default back navigation.
+            const activeTabData = tabState.tabs[activeTab];
+            const rootHref = activeTabData?.originalHref;
+            ionRouter.handleSetCurrentTab(activeTab, rootHref);
           }
 
           tabBar.selectedTab = tabState.activeTab = activeTab;
