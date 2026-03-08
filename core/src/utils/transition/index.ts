@@ -52,6 +52,19 @@ const beforeTransition = (opts: TransitionOptions) => {
   } else {
     enteringEl.classList.remove('can-go-back');
   }
+
+  /**
+   * Clear stale inline `display: none` before unhiding the entering page.
+   *
+   * iOS and MD back transitions write `display: none` on the leaving page
+   * after a successful back transition (see ios.transition.ts and
+   * md.transition.ts). In retained-view architectures (e.g. Ionic Vue's
+   * viewStacks), the same DOM element can later re-enter as the entering
+   * page. Without clearing the stale inline style, the page remains blank
+   * even though setPageHidden removes aria-hidden and ion-page-hidden.
+   */
+  enteringEl.style.removeProperty('display');
+
   setPageHidden(enteringEl, false);
 
   /**
