@@ -57,6 +57,7 @@ export const createIonRouter = (
   let leavingRouteInfo: CurrentRouteInfo | undefined;
 
   const historyChangeListeners: Array<() => void> = [];
+  const warnedTraversalMethods = new Set<string>();
 
   const setPending = (ctx: PendingNavigationContext): void => {
     pending = ctx;
@@ -72,16 +73,38 @@ export const createIonRouter = (
     historyChangeListeners.forEach((cb) => cb());
   };
 
-  const goBack = (routerAnimation?: AnimationBuilder) => {
+  const warnPatchedTraversalMethod = (
+    method: "go" | "back" | "forward",
+    delta?: number
+  ): void => {
+    if (warnedTraversalMethods.has(method)) {
+      return;
+    }
+
+    warnedTraversalMethods.add(method);
+
+    if (typeof console === "undefined" || typeof console.warn !== "function") {
+      return;
+    }
+
+    const invocation =
+      method === "go" ? `router.go(${delta ?? 0})` : `router.${method}()`;
+
+    console.warn(
+      `[Ionic Vue Router] ${invocation} is overridden to use Ionic context history instead of native browser history. This is a compatibility hack; prefer Ionic navigation APIs such as useIonRouter() and IonBackButton. Calls to these raw Vue Router traversal methods should be rare in production.`
+    );
+  };
+
+  const go = (delta: number, routerAnimation?: AnimationBuilder) => {
     const snapshot = contextHistory.captureState();
-    const target = contextHistory.performBack();
+    const target = contextHistory.go(delta);
 
     if (target === null) {
       return;
     }
 
     setPending({
-      direction: "back",
+      direction: delta < 0 ? "back" : "forward",
       animation: routerAnimation,
       snapshot,
     });
@@ -89,21 +112,38 @@ export const createIonRouter = (
     router.replace(target);
   };
 
-  const goForward = (routerAnimation?: AnimationBuilder) => {
-    const snapshot = contextHistory.captureState();
-    const target = contextHistory.performForward();
+  const goBack = (routerAnimation?: AnimationBuilder) => {
+    go(-1, routerAnimation);
+  };
 
-    if (target === null) {
+  const goForward = (routerAnimation?: AnimationBuilder) => {
+    go(1, routerAnimation);
+  };
+
+  // HACK: Vue Router's raw history traversal methods use the native session
+  // history as transport. Once Ionic intercepts a pop navigation and re-syncs
+  // the URL with router.replace(), the browser's own forward/back transport no
+  // longer matches the context-history cursor model. Patch the imperative
+  // router methods here so explicit router.go()/back()/forward() replay
+  // context-aware steps directly. Keep this localized and revisit if the hack
+  // can be moved down to the history transport layer instead.
+  router.go = (delta: number) => {
+    if (!Number.isFinite(delta)) {
       return;
     }
 
-    setPending({
-      direction: "forward",
-      animation: routerAnimation,
-      snapshot,
-    });
+    warnPatchedTraversalMethod("go", delta);
+    go(Math.trunc(delta));
+  };
 
-    router.replace(target);
+  router.back = () => {
+    warnPatchedTraversalMethod("back");
+    go(-1);
+  };
+
+  router.forward = () => {
+    warnPatchedTraversalMethod("forward");
+    go(1);
   };
 
   opts.history.listen((_to: any, _from: any, info: any) => {
@@ -114,17 +154,10 @@ export const createIonRouter = (
     const delta = pendingBrowserDelta;
     pendingBrowserDelta = null;
 
-    if (delta !== null && delta < 0) {
+    if (delta !== null && delta !== 0) {
       browserInterceptionInFlight = true;
       next(false);
-      goBack();
-      return;
-    }
-
-    if (delta !== null && delta > 0) {
-      browserInterceptionInFlight = true;
-      next(false);
-      goForward();
+      go(delta);
       return;
     }
 
@@ -134,7 +167,7 @@ export const createIonRouter = (
   router.afterEach(
     (
       to: RouteLocationNormalized,
-      from: RouteLocationNormalized,
+      _from: RouteLocationNormalized,
       failure?: NavigationFailure
     ) => {
       if (failure) {

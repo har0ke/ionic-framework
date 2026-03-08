@@ -51,6 +51,7 @@ const createRouterHarness = (initialPath = "/") => {
     }),
     push: jest.fn(),
     replace: jest.fn(),
+    go: jest.fn(),
     back: jest.fn(),
     forward: jest.fn(),
   };
@@ -184,6 +185,91 @@ describe("createIonRouter integration", () => {
     const nextForward = h.runBeforeEachOnly("/b");
     expect(nextForward).toBe(false);
     expect(h.router.replace).toHaveBeenLastCalledWith("/b");
+  });
+
+  it("replays deep history deltas through context-aware go steps", () => {
+    const h = createRouterHarness("/");
+
+    h.nav.handleNavigate("/a", "push", "forward");
+    h.commitNavigation("/a");
+    h.nav.handleNavigate("/b", "push", "forward");
+    h.commitNavigation("/b");
+    h.nav.handleNavigate("/c", "push", "forward");
+    h.commitNavigation("/c");
+
+    h.emitBrowserDelta(-2);
+    h.commitNavigation("/a");
+
+    expect(h.router.replace).toHaveBeenLastCalledWith("/a");
+
+    h.commitNavigation("/a", { replaced: true });
+    expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/a");
+    expect(h.nav.canGoBack()).toBe(false);
+    expect(h.nav.canGoForward(2)).toBe(true);
+
+    h.emitBrowserDelta(2);
+    h.commitNavigation("/c");
+
+    expect(h.router.replace).toHaveBeenLastCalledWith("/c");
+
+    h.commitNavigation("/c", { replaced: true });
+    expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/c");
+    expect(h.nav.canGoBack(2)).toBe(true);
+  });
+
+  it("wraps router.go to replay deep context-aware steps directly", () => {
+    const h = createRouterHarness("/");
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      h.nav.handleNavigate("/a", "push", "forward");
+      h.commitNavigation("/a");
+      h.nav.handleNavigate("/b", "push", "forward");
+      h.commitNavigation("/b");
+      h.nav.handleNavigate("/c", "push", "forward");
+      h.commitNavigation("/c");
+
+      h.router.go(-2);
+      expect(h.router.replace).toHaveBeenLastCalledWith("/a");
+      h.commitNavigation("/a", { replaced: true });
+
+      expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/a");
+      expect(h.nav.canGoBack()).toBe(false);
+      expect(h.nav.canGoForward(2)).toBe(true);
+
+      h.router.go(2);
+      expect(h.router.replace).toHaveBeenLastCalledWith("/c");
+      h.commitNavigation("/c", { replaced: true });
+
+      expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/c");
+      expect(h.nav.canGoBack(2)).toBe(true);
+
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0][0]).toContain("router.go(-2)");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("warns once per overridden traversal method", () => {
+    const h = createRouterHarness("/");
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      h.router.back();
+      h.router.back();
+      h.router.forward();
+      h.router.forward();
+      h.router.go(-1);
+      h.router.go(1);
+
+      expect(warn).toHaveBeenCalledTimes(3);
+      expect(warn.mock.calls[0][0]).toContain("router.back()");
+      expect(warn.mock.calls[1][0]).toContain("router.forward()");
+      expect(warn.mock.calls[2][0]).toContain("router.go(-1)");
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("does not roll back delegated back after browser interception abort", () => {
