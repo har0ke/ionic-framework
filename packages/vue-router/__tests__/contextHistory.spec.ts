@@ -547,3 +547,210 @@ describe("Context History (Chunk D tab/reset/snapshot/output)", () => {
     expect(snap.contexts.default.entries[0].backTarget).toBeNull();
   });
 });
+
+describe("Context History (Chunk E prepared navigation plans)", () => {
+  it("prepareBack returns null when blocked, plan when cursor > 0", () => {
+    const ctx = createContextHistory();
+    ctx.push("/");
+
+    // At cursor 0 with root entry '/' matching implicit default '/' → blocked
+    expect(ctx.prepareBack()).toBeNull();
+
+    ctx.push("/a");
+    ctx.push("/b");
+
+    // cursor 2 → prepareBack should produce a plan targeting '/a'
+    const plan = ctx.prepareBack();
+    expect(plan).not.toBeNull();
+    expect(plan!.transport).toBe("replace");
+    expect(plan!.target).toBe("/a");
+    expect(plan!.direction).toBe("back");
+    expect(plan!.action).toBe("pop");
+    expect(plan!.expectedComparableTarget).toBe("/a");
+
+    // State should NOT be mutated yet
+    expect(ctx.currentEntry()?.pathname).toBe("/b");
+
+    // Commit the plan
+    const entry = plan!.commit({ pathname: "/a", search: "" });
+    expect(entry.pathname).toBe("/a");
+    expect(ctx.currentEntry()?.pathname).toBe("/a");
+  });
+
+  it("prepareBack with fallback-to-default at cursor 0", () => {
+    const ctx = createContextHistory();
+    ctx.push("/deep-link");
+
+    // cursor 0, root entry '/deep-link' != implicit default '/' → fallback
+    const plan = ctx.prepareBack();
+    expect(plan).not.toBeNull();
+    expect(plan!.target).toBe("/");
+    expect(plan!.action).toBe("pop");
+
+    // State not mutated
+    expect(ctx.currentEntry()?.pathname).toBe("/deep-link");
+
+    // Commit replaces the entry at cursor 0
+    const entry = plan!.commit({ pathname: "/", search: "" });
+    expect(entry.pathname).toBe("/");
+    expect(ctx.currentEntry()?.pathname).toBe("/");
+  });
+
+  it("prepareBack with tab rootHref fallback", () => {
+    const ctx = createContextHistory();
+    ctx.registerContext("feed", "/tabs/feed", tabConfig);
+    ctx.push("/tabs/feed/detail");
+    ctx.handleSetCurrentTab("feed", "/tabs/feed/detail", "/tabs/feed");
+
+    const plan = ctx.prepareBack();
+    expect(plan).not.toBeNull();
+    expect(plan!.target).toBe("/tabs/feed");
+
+    // Passing defaultHref should not override rootHref
+    const plan2 = ctx.prepareBack("/other");
+    expect(plan2!.target).toBe("/tabs/feed");
+  });
+
+  it("prepareForward returns null at end, plan when forward exists", () => {
+    const ctx = createContextHistory();
+    ctx.push("/a");
+    ctx.push("/b");
+    ctx.push("/c");
+    ctx.performBack(); // cursor 2 → 1
+
+    const plan = ctx.prepareForward();
+    expect(plan).not.toBeNull();
+    expect(plan!.transport).toBe("replace");
+    expect(plan!.target).toBe("/c");
+    expect(plan!.direction).toBe("forward");
+
+    // State not mutated
+    expect(ctx.currentEntry()?.pathname).toBe("/b");
+
+    plan!.commit({ pathname: "/c", search: "" });
+    expect(ctx.currentEntry()?.pathname).toBe("/c");
+
+    // At end → null
+    expect(ctx.prepareForward()).toBeNull();
+  });
+
+  it("prepareGo simulates multi-step back and forward", () => {
+    const ctx = createContextHistory();
+    ctx.push("/a");
+    ctx.push("/b");
+    ctx.push("/c");
+    ctx.push("/d");
+
+    // Go back 2 steps
+    const backPlan = ctx.prepareGo(-2);
+    expect(backPlan).not.toBeNull();
+    expect(backPlan!.target).toBe("/b");
+    expect(backPlan!.direction).toBe("back");
+    expect(ctx.currentEntry()?.pathname).toBe("/d"); // not mutated
+
+    backPlan!.commit({ pathname: "/b", search: "" });
+    expect(ctx.currentEntry()?.pathname).toBe("/b");
+
+    // Go forward 2 steps
+    const fwdPlan = ctx.prepareGo(2);
+    expect(fwdPlan).not.toBeNull();
+    expect(fwdPlan!.target).toBe("/d");
+    expect(fwdPlan!.direction).toBe("forward");
+    expect(ctx.currentEntry()?.pathname).toBe("/b"); // not mutated
+
+    fwdPlan!.commit({ pathname: "/d", search: "" });
+    expect(ctx.currentEntry()?.pathname).toBe("/d");
+
+    // Go back 0 → null
+    expect(ctx.prepareGo(0)).toBeNull();
+  });
+
+  it("prepareGo returns null when first step is blocked", () => {
+    const ctx = createContextHistory();
+    ctx.push("/");
+    // At '/' which matches default → back blocked
+    expect(ctx.prepareGo(-1)).toBeNull();
+    // No forward entries
+    expect(ctx.prepareGo(1)).toBeNull();
+  });
+
+  it("prepareChangeTab returns a plan that synthesizes an entry for empty tab", () => {
+    const ctx = createContextHistory();
+    ctx.push("/home");
+
+    const plan = ctx.prepareChangeTab("feed", "/tabs/feed");
+    expect(plan.transport).toBe("push");
+    expect(plan.target).toBe("/tabs/feed");
+    expect(plan.direction).toBe("none");
+
+    // State not mutated (still in default context)
+    expect(ctx.currentEntry()?.pathname).toBe("/home");
+
+    const entry = plan.commit({ pathname: "/tabs/feed", search: "" });
+    expect(entry.pathname).toBe("/tabs/feed");
+    expect(entry.context).toBe("feed");
+  });
+
+  it("prepareChangeTab returns existing tab entry if tab has history", () => {
+    const ctx = createContextHistory();
+    ctx.registerContext("feed", "/tabs/feed", tabConfig);
+    ctx.push("/tabs/feed");
+    ctx.push("/tabs/feed/detail");
+    ctx.push("/other");
+
+    const plan = ctx.prepareChangeTab("feed", "/tabs/feed");
+    // Tab has history, cursor at 1 → target is '/tabs/feed/detail'
+    expect(plan.target).toBe("/tabs/feed/detail");
+  });
+
+  it("prepareResetTab returns plan for active tab, null for inactive", () => {
+    const ctx = createContextHistory();
+    ctx.registerContext("feed", "/tabs/feed", tabConfig);
+    ctx.push("/tabs/feed");
+    ctx.push("/tabs/feed/page2");
+
+    // feed is not active context (default is) → null
+    // Wait, push into /tabs/feed goes to feed context due to prefix match
+    // Actually it does match, so activeContext should be 'feed'
+
+    const plan = ctx.prepareResetTab("feed", "/tabs/feed");
+    expect(plan).not.toBeNull();
+    expect(plan!.transport).toBe("replace");
+    expect(plan!.target).toBe("/tabs/feed");
+    expect(plan!.direction).toBe("back");
+
+    // Not mutated
+    expect(ctx.currentEntry()?.pathname).toBe("/tabs/feed/page2");
+
+    plan!.commit({ pathname: "/tabs/feed", search: "" });
+    expect(ctx.currentEntry()?.pathname).toBe("/tabs/feed");
+    expect(ctx.canGoForward()).toBe(false); // entries truncated to root
+  });
+
+  it("prepareResetAll returns a plan that clears all stacks", () => {
+    const ctx = createContextHistory();
+    ctx.registerContext("feed", "/tabs/feed", tabConfig);
+    ctx.push("/tabs/feed");
+    ctx.push("/tabs/feed/page2");
+    ctx.push("/other");
+
+    const plan = ctx.prepareResetAll("/login");
+    expect(plan.transport).toBe("replace");
+    expect(plan.target).toBe("/login");
+    expect(plan.direction).toBe("root");
+    expect(plan.action).toBe("replace");
+
+    // Not mutated
+    expect(ctx.currentEntry()?.pathname).toBe("/other");
+
+    plan.commit({ pathname: "/login", search: "" });
+    expect(ctx.currentEntry()?.pathname).toBe("/login");
+    // After resetAll to '/login': root entry is '/login', implicit default
+    // is '/' → canGoBack is true (back would go to '/' via fallback)
+    expect(ctx.canGoBack()).toBe(true);
+
+    // Tab context should be cleared
+    const snap = ctx.snapshot();
+    expect(snap.contexts.feed?.entries.length ?? 0).toBe(0);
+  });
+});

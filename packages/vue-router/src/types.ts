@@ -175,6 +175,40 @@ export interface CurrentRouteInfo {
   tab: string;
 }
 
+/**
+ * A prepared navigation plan computed by contextHistory without mutating state.
+ *
+ * The router integration calls `commit(resolved)` in afterEach after Vue Router
+ * confirms the navigation succeeded, passing the resolved route payload so the
+ * internal entry matches the final navigated URL.
+ */
+export interface PreparedPlan {
+  /** The Vue Router call to make: 'replace' or 'push'. */
+  transport: "replace" | "push";
+  /** The target route to pass to router.replace() or router.push(). */
+  target: string;
+  /** The transition direction for outlet animations. */
+  direction: RouteDirection;
+  /** The semantic action for CurrentRouteInfo. */
+  action: RouteAction;
+  /**
+   * The comparable path (pathname + query) that the plan expects Vue Router
+   * to resolve to. Used by afterEach to verify the navigation landed where
+   * expected; if it doesn't match, the plan is dropped.
+   */
+  expectedComparableTarget: string;
+  /** Animation override for the transition. */
+  animation?: AnimationBuilder;
+  /**
+   * Commit the prepared navigation. Mutates context history state to reflect
+   * the navigation. Should only be called after Vue Router confirms success.
+   *
+   * @param resolved - The resolved route payload from Vue Router's `to` route
+   * @returns The NavEntry that was created or moved to
+   */
+  commit(resolved: { pathname: string; search: string; params?: Record<string, any> }): NavEntry;
+}
+
 export interface ContextHistorySnapshot {
   activeContext: string;
   contexts: {

@@ -5,6 +5,7 @@ import type {
   CurrentRouteInfo,
   NavEntry,
   NavigationContext,
+  PreparedPlan,
   PushOptions,
   RouteAction,
   RouteDirection,
@@ -746,6 +747,356 @@ export const createContextHistory = () => {
     }
   };
 
+  // ─── Prepared (non-mutating) navigation methods ────────────────────
+
+  /**
+   * Helper to build a commit function that replaces the entry at the active
+   * context's current cursor position using the resolved route payload.
+   *
+   * Used by fallback-to-default scenarios where back/go resolves to a
+   * synthetic default target rather than an existing entry.
+   */
+  const buildReplaceCommit = (
+    contextId: string,
+    animation: PreparedPlan["animation"]
+  ): PreparedPlan["commit"] => {
+    return (resolved) => {
+      const stack = ensureContextStack(contextId);
+      const parsed = parseRouteInput(resolved);
+      const entry = createNavEntry(contextId, parsed, {
+        originContext: null,
+        routerAnimation: animation,
+      });
+      if (stack.entries.length === 0) {
+        stack.entries.push(entry);
+        stack.cursor = 0;
+      } else {
+        stack.entries[stack.cursor] = entry;
+      }
+      activeContext = contextId;
+      return entry;
+    };
+  };
+
+  /**
+   * Prepare a back navigation plan without mutating state.
+   *
+   * Returns null if back is blocked.
+   */
+  const prepareBack = (defaultHref?: string, animation?: PreparedPlan["animation"]): PreparedPlan | null => {
+    const stack = ensureContextStack(activeContext);
+    if (stack.entries.length === 0) {
+      return null;
+    }
+
+    const currentCtx = activeContext;
+
+    if (stack.cursor > 0) {
+      // Cursor move: target is the entry one position back
+      const targetEntry = stack.entries[stack.cursor - 1];
+      const target = entryToPath(targetEntry);
+
+      return {
+        transport: "replace",
+        target,
+        direction: "back",
+        action: "pop",
+        expectedComparableTarget: target,
+        animation,
+        commit: () => {
+          const s = ensureContextStack(currentCtx);
+          s.cursor -= 1;
+          activeContext = currentCtx;
+          return s.entries[s.cursor];
+        },
+      };
+    }
+
+    // cursor === 0: fallback to default
+    const effectiveDefault = getEffectiveDefault(defaultHref);
+    const rootEntry = stack.entries[0];
+    if (entryToPath(rootEntry) === effectiveDefault) {
+      return null; // blocked
+    }
+
+    return {
+      transport: "replace",
+      target: effectiveDefault,
+      direction: "back",
+      action: "pop",
+      expectedComparableTarget: effectiveDefault,
+      animation,
+      commit: buildReplaceCommit(currentCtx, animation),
+    };
+  };
+
+  /**
+   * Prepare a forward navigation plan without mutating state.
+   *
+   * Returns null if forward is blocked.
+   */
+  const prepareForward = (animation?: PreparedPlan["animation"]): PreparedPlan | null => {
+    const stack = ensureContextStack(activeContext);
+    if (stack.entries.length === 0 || stack.cursor >= stack.entries.length - 1) {
+      return null;
+    }
+
+    const currentCtx = activeContext;
+    const targetEntry = stack.entries[stack.cursor + 1];
+    const target = entryToPath(targetEntry);
+
+    return {
+      transport: "replace",
+      target,
+      direction: "forward",
+      action: "push",
+      expectedComparableTarget: target,
+      animation,
+      commit: () => {
+        const s = ensureContextStack(currentCtx);
+        s.cursor += 1;
+        activeContext = currentCtx;
+        return s.entries[s.cursor];
+      },
+    };
+  };
+
+  /**
+   * Prepare a multi-step traversal plan without mutating state.
+   *
+   * Simulates the steps to find the final target, then the commit function
+   * replays the actual mutations.
+   *
+   * Returns null if the first step would be blocked.
+   */
+  const prepareGo = (delta: number, defaultHref?: string, animation?: PreparedPlan["animation"]): PreparedPlan | null => {
+    const normalizedDelta = Math.trunc(delta);
+    if (normalizedDelta === 0) {
+      return null;
+    }
+
+    const stack = ensureContextStack(activeContext);
+    if (stack.entries.length === 0) {
+      return null;
+    }
+
+    const currentCtx = activeContext;
+
+    if (normalizedDelta < 0) {
+      // Simulate back steps to find final target
+      const steps = Math.abs(normalizedDelta);
+      let simCursor = stack.cursor;
+      let finalTarget: string | null = null;
+      let stepsCompleted = 0;
+      let lastStepWasFallback = false;
+
+      for (let i = 0; i < steps; i += 1) {
+        if (simCursor > 0) {
+          simCursor -= 1;
+          finalTarget = entryToPath(stack.entries[simCursor]);
+          stepsCompleted += 1;
+          lastStepWasFallback = false;
+        } else {
+          // cursor === 0: fallback
+          const effectiveDefault = getEffectiveDefault(defaultHref);
+          const rootEntry = stack.entries[0];
+          if (entryToPath(rootEntry) === effectiveDefault) {
+            break; // blocked
+          }
+          finalTarget = effectiveDefault;
+          stepsCompleted += 1;
+          lastStepWasFallback = true;
+          break; // fallback is terminal (can't go further back)
+        }
+      }
+
+      if (stepsCompleted === 0 || finalTarget === null) {
+        return null;
+      }
+
+      const finalCursor = simCursor;
+      const isFallback = lastStepWasFallback;
+
+      return {
+        transport: "replace",
+        target: finalTarget,
+        direction: "back",
+        action: "pop",
+        expectedComparableTarget: finalTarget,
+        animation,
+        commit: isFallback
+          ? buildReplaceCommit(currentCtx, animation)
+          : () => {
+              const s = ensureContextStack(currentCtx);
+              s.cursor = finalCursor;
+              activeContext = currentCtx;
+              return s.entries[s.cursor];
+            },
+      };
+    }
+
+    // Positive delta: simulate forward steps
+    let simCursor = stack.cursor;
+    let finalTarget: string | null = null;
+    let stepsCompleted = 0;
+
+    for (let i = 0; i < normalizedDelta; i += 1) {
+      if (simCursor < stack.entries.length - 1) {
+        simCursor += 1;
+        finalTarget = entryToPath(stack.entries[simCursor]);
+        stepsCompleted += 1;
+      } else {
+        break;
+      }
+    }
+
+    if (stepsCompleted === 0 || finalTarget === null) {
+      return null;
+    }
+
+    const finalCursor = simCursor;
+
+    return {
+      transport: "replace",
+      target: finalTarget,
+      direction: "forward",
+      action: "push",
+      expectedComparableTarget: finalTarget,
+      animation,
+      commit: () => {
+        const s = ensureContextStack(currentCtx);
+        s.cursor = finalCursor;
+        activeContext = currentCtx;
+        return s.entries[s.cursor];
+      },
+    };
+  };
+
+  /**
+   * Prepare a tab change plan without mutating state.
+   *
+   * Returns a plan whose commit switches the active context and
+   * potentially synthesizes a first entry for an empty tab.
+   */
+  const prepareChangeTab = (tab: string, defaultHref: string): PreparedPlan => {
+    ensureTabRegistration(tab, defaultHref);
+    const targetStack = ensureContextStack(tab);
+
+    const targetPath = targetStack.entries.length > 0
+      ? entryToPath(targetStack.entries[targetStack.cursor])
+      : defaultHref;
+
+    return {
+      transport: "push",
+      target: targetPath,
+      direction: "none",
+      action: "push",
+      expectedComparableTarget: targetPath,
+      commit: (resolved) => {
+        const stack = ensureContextStack(tab);
+        if (stack.entries.length === 0) {
+          const parsed = parseRouteInput(resolved);
+          const synthesized = createNavEntry(tab, parsed, {
+            originContext: null,
+            routerAnimation: undefined,
+          });
+          stack.entries.push(synthesized);
+          stack.cursor = 0;
+        }
+        activeContext = tab;
+        return stack.entries[stack.cursor];
+      },
+    };
+  };
+
+  /**
+   * Prepare a tab reset plan without mutating state.
+   *
+   * Returns null if the tab is not the active context (no navigation needed).
+   */
+  const prepareResetTab = (tab: string, defaultHref?: string): PreparedPlan | null => {
+    const targetStack = ensureContextStack(tab);
+    const rootEntry = targetStack.entries[0];
+    const rootMatchesDefaultHref = Boolean(rootEntry) && (defaultHref === undefined || entryToPath(rootEntry) === defaultHref);
+
+    const targetPath = rootEntry && rootMatchesDefaultHref
+      ? entryToPath(rootEntry)
+      : defaultHref ?? null;
+
+    if (targetPath === null) {
+      return null;
+    }
+
+    if (activeContext !== tab) {
+      return null;
+    }
+
+    return {
+      transport: "replace",
+      target: targetPath,
+      direction: "back",
+      action: "pop",
+      expectedComparableTarget: targetPath,
+      commit: (resolved) => {
+        const stack = ensureContextStack(tab);
+        const root = stack.entries[0];
+        const rootMatches = Boolean(root) && (defaultHref === undefined || entryToPath(root) === defaultHref);
+
+        if (root && rootMatches) {
+          stack.entries = [root];
+        } else {
+          stack.entries = [];
+          const parsed = parseRouteInput(resolved);
+          stack.entries.push(
+            createNavEntry(tab, parsed, {
+              originContext: null,
+              routerAnimation: undefined,
+            })
+          );
+        }
+        stack.cursor = 0;
+        if (stack.entries[0]) {
+          stack.entries[0].originContext = null;
+        }
+        return stack.entries[stack.cursor];
+      },
+    };
+  };
+
+  /**
+   * Prepare a full reset plan without mutating state.
+   *
+   * Always returns a plan (resetAll always succeeds).
+   */
+  const prepareResetAll = (redirectTo: string): PreparedPlan => {
+    return {
+      transport: "replace",
+      target: redirectTo,
+      direction: "root",
+      action: "replace",
+      expectedComparableTarget: redirectTo,
+      commit: (resolved) => {
+        for (const stack of contexts.values()) {
+          stack.entries = [];
+          stack.cursor = 0;
+        }
+
+        const parsed = parseRouteInput(resolved);
+        const targetContext = matchContext(parsed.pathname);
+        const targetStack = ensureContextStack(targetContext);
+        const entry = createNavEntry(targetContext, parsed, {
+          originContext: null,
+          routerAnimation: undefined,
+        });
+
+        targetStack.entries.push(entry);
+        targetStack.cursor = 0;
+        activeContext = targetContext;
+        return entry;
+      },
+    };
+  };
+
   /**
    * Produce a read-only snapshot of the complete navigational model state.
    *
@@ -792,5 +1143,12 @@ export const createContextHistory = () => {
     currentEntry,
     canGoBack,
     canGoForward,
+    // Prepared (non-mutating) methods
+    prepareBack,
+    prepareForward,
+    prepareGo,
+    prepareChangeTab,
+    prepareResetTab,
+    prepareResetAll,
   };
 };
