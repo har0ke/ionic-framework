@@ -92,3 +92,106 @@ export interface NavigationInformation {
   direction?: RouteDirection;
   delta?: number;
 }
+
+/**
+ * Phase 1 (router rewrite): internal types for context-based history.
+ *
+ * These types are package-internal and are not re-exported from `@ionic/vue-router`.
+ * They are added additively so the existing router implementation can continue
+ * to compile while the rewrite is developed in parallel.
+ */
+
+export type ContextBackBehavior = "within-context" | "previous-context";
+export type ContextRootBackBehavior = "block" | "previous-context";
+export type UnmatchedBehavior = "default" | "active";
+
+export interface ContextConfig {
+  backBehavior: ContextBackBehavior;
+  rootBackBehavior: ContextRootBackBehavior;
+  clearOnExternalPush: boolean;
+  unmatchedBehavior: UnmatchedBehavior;
+}
+
+export interface PushOptions {
+  // Entry overrides (stored on created NavEntry)
+  backBehavior?: ContextBackBehavior;
+  rootBackBehavior?: ContextRootBackBehavior;
+
+  // Push-time overrides (consumed, not stored)
+  unmatchedBehavior?: UnmatchedBehavior;
+  clearOnExternalPush?: boolean;
+
+  // Navigation metadata
+  routerAnimation?: AnimationBuilder;
+}
+
+export interface NavEntry {
+  id: string;
+  pathname: string;
+  search: string;
+  params: Record<string, any> | undefined;
+
+  context: string;
+  originContext: string | null;
+
+  backBehavior: ContextBackBehavior | null;
+  rootBackBehavior: ContextRootBackBehavior | null;
+
+  routerAnimation: AnimationBuilder | undefined;
+}
+
+export interface ContextStack {
+  entries: NavEntry[];
+  cursor: number;
+  config: ContextConfig;
+}
+
+export interface SavedEntries {
+  context: string;
+  entries: NavEntry[];
+}
+
+// Placeholder for now; may evolve as rewrite lands.
+export interface StateSnapshot {
+  activeContext: string;
+  cursors: { [contextId: string]: number };
+  savedEntries?: SavedEntries[];
+}
+
+export interface NavigationContext {
+  animation?: AnimationBuilder;
+  direction?: RouteDirection;
+  snapshot?: StateSnapshot;
+}
+
+// Placeholder for now; kept separate from legacy RouteInfo.
+export interface CurrentRouteInfo {
+  id: string;
+  pathname: string;
+  search: string;
+  params: Record<string, any> | undefined;
+
+  pushedByRoute: string | undefined;
+
+  routerAction: RouteAction;
+  routerDirection: RouteDirection;
+  routerAnimation: AnimationBuilder | undefined;
+  lastPathname: string;
+  prevRouteLastPathname: string | undefined;
+  delta: number | undefined;
+
+  tab: string;
+}
+
+export interface ContextHistorySnapshot {
+  activeContext: string;
+  contexts: {
+    [id: string]: {
+      cursor: number;
+      entries: {
+        url: string;
+        backTarget: { context: string; cursor: number } | null;
+      }[];
+    };
+  };
+}
