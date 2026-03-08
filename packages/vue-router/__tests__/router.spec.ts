@@ -318,6 +318,21 @@ describe("createIonRouter integration", () => {
     expect(h.nav.getCurrentRouteInfo()?.routerDirection).toBe("root");
   });
 
+  it("lazy-registers a tab context on first changeTab", () => {
+    const h = createRouterHarness("/");
+
+    h.nav.handleNavigate("/tabs/tab1", "push", "forward");
+    h.commitNavigation("/tabs/tab1");
+
+    h.nav.changeTab("tab2", "/tabs/tab2");
+    expect(h.router.push).toHaveBeenLastCalledWith("/tabs/tab2");
+
+    h.commitNavigation("/tabs/tab2");
+
+    expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/tabs/tab2");
+    expect(h.nav.getContextSnapshot().contexts.tab2).toBeDefined();
+  });
+
   it("handles ionBackButton by calling goBack path", () => {
     const h = createRouterHarness("/");
 

@@ -490,6 +490,7 @@ export const createContextHistory = () => {
   };
 
   const changeTab = (tab: string, defaultHref: string): string => {
+    ensureTabRegistration(tab, defaultHref);
     const targetStack = ensureContextStack(tab);
 
     if (targetStack.entries.length === 0) {
@@ -668,14 +669,7 @@ export const createContextHistory = () => {
     return normalizePrefix(`/${segments.slice(0, tabSegmentIndex + 1).join("/")}`);
   };
 
-  const handleSetCurrentTab = (tab: string, currentPathname: string): void => {
-    if (registrations.has(tab)) {
-      return;
-    }
-
-    const prefix = deriveTabPrefix(tab, currentPathname);
-    registerContext(tab, prefix, TAB_CONTEXT_CONFIG);
-
+  const migrateDefaultEntriesToTab = (tab: string): void => {
     const registration = registrations.get(tab);
     if (!registration) {
       return;
@@ -715,15 +709,35 @@ export const createContextHistory = () => {
     if (defaultStack.entries.length === 0) {
       defaultStack.cursor = 0;
     } else {
-      defaultStack.cursor = Math.max(0, defaultStack.cursor - movedBeforeOrAtCursorCount);
+      defaultStack.cursor = Math.max(
+        0,
+        defaultStack.cursor - movedBeforeOrAtCursorCount
+      );
       if (defaultStack.cursor > defaultStack.entries.length - 1) {
         defaultStack.cursor = defaultStack.entries.length - 1;
       }
     }
 
-    if (activeContext === DEFAULT_CONTEXT_ID && (movedCurrent || defaultStack.entries.length === 0)) {
+    if (
+      activeContext === DEFAULT_CONTEXT_ID &&
+      (movedCurrent || defaultStack.entries.length === 0)
+    ) {
       activeContext = tab;
     }
+  };
+
+  const ensureTabRegistration = (tab: string, currentPathname: string): void => {
+    if (registrations.has(tab)) {
+      return;
+    }
+
+    const prefix = deriveTabPrefix(tab, currentPathname);
+    registerContext(tab, prefix, TAB_CONTEXT_CONFIG);
+    migrateDefaultEntriesToTab(tab);
+  };
+
+  const handleSetCurrentTab = (tab: string, currentPathname: string): void => {
+    ensureTabRegistration(tab, currentPathname);
   };
 
   const snapshot = (): ContextHistorySnapshot => {
