@@ -271,13 +271,26 @@ export const IonRouterOutlet = /*@__PURE__*/ defineComponent({
 
       viewStack.forEach((viewItem: any) => {
         if (retainedPathnames.has(viewItem.pathname)) {
-          viewItem.mount = true;
+          if (!viewItem.mount) {
+            viewItem.mount = true;
+            viewItem.registerCallback = () => {
+              if (viewItem.ionPageElement) {
+                viewItem.ionPageElement.classList.remove("ion-page-invisible");
+                viewItem.ionPageElement.classList.add("ion-page-hidden");
+                viewItem.ionPageElement.setAttribute("aria-hidden", "true");
+              }
+
+              viewItem.registerCallback = undefined;
+            };
+          }
+
           return;
         }
 
         viewItem.mount = false;
         viewItem.ionPageElement = undefined;
         viewItem.ionRoute = false;
+        viewItem.registerCallback = undefined;
         viewItem.matchedRoute.instances = {};
       });
     };
@@ -344,6 +357,11 @@ See https://ionicframework.com/docs/vue/navigation#ionpage for more information.
         !isViewVisible(leavingViewItem.ionPageElement)
       ) {
         return;
+      }
+
+      if (enteringEl !== undefined) {
+        enteringEl.classList.remove("ion-page-hidden");
+        enteringEl.removeAttribute("aria-hidden");
       }
 
       fireLifecycle(
@@ -470,6 +488,7 @@ See https://ionicframework.com/docs/vue/navigation#ionpage for more information.
           enteringViewItem.registerCallback = undefined;
         };
       } else {
+        enteringViewItem.registerCallback = undefined;
         handlePageTransition();
       }
 

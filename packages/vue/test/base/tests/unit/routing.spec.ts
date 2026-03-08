@@ -273,19 +273,19 @@ describe('Routing', () => {
     expect(tabsView.exists()).toBe(true);
     expect(isHidden(tabsView)).toBe(true);
 
-    router.replace('/tabs/tab1');
+    router.replace('/tabs/tab2');
     await waitForRouter();
 
     const parentViewAgain = wrapper.findComponent(Parent);
-    const tab1View = wrapper.findComponent(Tab1);
     const tab2View = wrapper.findComponent(Tab2);
+    const tabsViewAgain = wrapper.findComponent(Tabs);
 
     expect(parentViewAgain.exists()).toBe(true);
     expect(isHidden(parentViewAgain)).toBe(true);
-    expect(tab1View.exists()).toBe(true);
-    expect(isHidden(tab1View)).toBe(false);
     expect(tab2View.exists()).toBe(true);
-    expect(isHidden(tab2View)).toBe(true);
+    expect(isHidden(tab2View)).toBe(false);
+    expect(tabsViewAgain.exists()).toBe(true);
+    expect(isHidden(tabsViewAgain)).toBe(false);
   });
 
   // Verifies fix for https://github.com/ionic-team/ionic-framework/issues/23043
@@ -704,5 +704,68 @@ describe('Routing', () => {
     expect(wrapper.findComponent(Page).exists()).toBe(true);
     expect(wrapper.findComponent(Page2).exists()).toBe(false);
     expect(wrapper.findComponent(Page3).exists()).toBe(false);
+  });
+
+  it('should remount intermediary components when going forward after router.go', async () => {
+    const Page = {
+      components: { IonPage },
+      name: 'Page',
+      template: `<ion-page></ion-page>`
+    }
+    const Page2 = {
+      components: { IonPage },
+      name: 'Page2',
+      template: `<ion-page></ion-page>`
+    }
+    const Page3 = {
+      components: { IonPage },
+      name: 'Page3',
+      template: `<ion-page></ion-page>`
+    }
+
+    const router = createRouter({
+      history: createWebHistory(process.env.BASE_URL),
+      routes: [
+        { path: '/page', component: Page },
+        { path: '/page2', component: Page2 },
+        { path: '/page3', component: Page3 },
+        { path: '/', redirect: '/page' }
+      ]
+    });
+
+    router.push('/');
+    await router.isReady();
+    const wrapper = mount(IonRouterOutlet, {
+      global: {
+        plugins: [router, IonicVue]
+      }
+    });
+
+    router.push('/page2');
+    await waitForRouter();
+
+    router.push('/page3');
+    await waitForRouter();
+
+    router.go(-2);
+    await waitForRouter();
+
+    expect(wrapper.findComponent(Page).exists()).toBe(true);
+    expect(wrapper.findComponent(Page2).exists()).toBe(false);
+    expect(wrapper.findComponent(Page3).exists()).toBe(false);
+
+    router.go(2);
+    await waitForRouter();
+
+    const pageView = wrapper.findComponent(Page);
+    const page2View = wrapper.findComponent(Page2);
+    const page3View = wrapper.findComponent(Page3);
+
+    expect(pageView.exists()).toBe(true);
+    expect(isHidden(pageView)).toBe(true);
+    expect(page2View.exists()).toBe(true);
+    expect(isHidden(page2View)).toBe(true);
+    expect(page3View.exists()).toBe(true);
+    expect(isHidden(page3View)).toBe(false);
   });
 });

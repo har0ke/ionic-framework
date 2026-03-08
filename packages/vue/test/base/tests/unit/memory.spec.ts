@@ -1,5 +1,5 @@
 import { mount } from '@vue/test-utils';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { createRouter, createMemoryHistory } from '@ionic/vue-router';
 import {
   IonContent,
@@ -42,8 +42,6 @@ describe('createMemoryHistory', () => {
         { path: '/page3', component: PageTemplate }
       ]
     });
-    const push = vi.spyOn(router, 'back');
-
     router.push('/');
     await router.isReady();
     const wrapper = mount(App, {
@@ -66,9 +64,11 @@ describe('createMemoryHistory', () => {
     await pageThreeButton.trigger('click');
     await waitForRouter();
 
+    expect(router.currentRoute.value.path).toBe('/page2');
+
     await pageTwoButton.trigger('click');
     await waitForRouter();
 
-    expect(push).toHaveBeenCalledTimes(2);
+    expect(router.currentRoute.value.path).toBe('/');
   });
 })
