@@ -221,7 +221,7 @@ export const createIonRouter = (
         return;
       }
 
-      const routerAction: RouteAction = opts.history.state.replaced
+      const inferredAction: RouteAction = opts.history.state.replaced
         ? "replace"
         : "push";
 
@@ -232,7 +232,7 @@ export const createIonRouter = (
       };
 
       const entering =
-        routerAction === "replace"
+        inferredAction === "replace"
           ? contextHistory.replace(routePayload, {
               routerAnimation: navContext?.animation,
             })
@@ -240,9 +240,12 @@ export const createIonRouter = (
               routerAnimation: navContext?.animation,
             });
 
+      // Use the pending context's action if available (e.g. "pop" for back
+      // navigations that fall through to default), otherwise derive from
+      // the router's replaced state.
       currentRouteInfo = contextHistory.produceCurrentRouteInfo(entering, leaving, {
         ...navContext,
-        action: routerAction,
+        action: navContext?.action ?? inferredAction,
       });
 
       leavingRouteInfo = leaving;
@@ -255,27 +258,33 @@ export const createIonRouter = (
     routerAnimation?: AnimationBuilder
   ) => {
     const snapshot = contextHistory.captureState();
-    const target = contextHistory.performBack();
+    const target = contextHistory.performBack(defaultHref);
 
     if (target !== null) {
+      // Check whether performBack did a cursor move (entry exists at new
+      // position) or a fallback-to-default (cursor stayed at 0, target is a
+      // synthetic default). If the current entry's path matches the target,
+      // it was a cursor move → use snapshot path. Otherwise it was a fallback
+      // → omit snapshot so afterEach processes it as a regular replace.
+      const entry = contextHistory.currentEntry();
+      const entryPath = entry
+        ? (entry.search ? `${entry.pathname}?${entry.search}` : entry.pathname)
+        : undefined;
+      const isCursorMove = entryPath === target;
+
       setPending({
         direction: "back",
+        action: "pop",
         animation: routerAnimation,
-        snapshot,
+        ...(isCursorMove ? { snapshot } : {}),
       });
 
       router.replace(target);
       return;
     }
 
-    if (defaultHref) {
-      setPending({
-        direction: "back",
-        animation: routerAnimation,
-      });
-
-      router.push(defaultHref);
-    }
+    // Back is fully blocked (already at the effective default target).
+    // Nothing to do.
   };
 
   const handleNavigate = (

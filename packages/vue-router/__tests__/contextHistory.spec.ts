@@ -96,7 +96,10 @@ describe("Context History (Chunk B stack operations)", () => {
 
     expect(ctx.currentEntry()?.pathname).toEqual("/login-new/");
     expect(ctx.currentEntry()?.context).toEqual("default");
-    expect(ctx.canGoBack(1)).toBe(false);
+    // Default context, root entry '/login-new/' != fallback '/' → canGoBack(1) is true
+    // (performBack would return '/' as the fallback target)
+    expect(ctx.canGoBack(1)).toBe(true);
+    expect(ctx.canGoBack(2)).toBe(false);
   });
 
   it("replace in same context updates pathname but keeps routerAnimation", () => {
@@ -124,17 +127,44 @@ describe("Context History (Chunk B stack operations)", () => {
     expect(ctx.currentEntry()?.originContext).toEqual("feed");
   });
 
-  it("canGoBack and canGoForward use cursor bounds", () => {
+  it("canGoBack accounts for cursor and fallback-to-default offset", () => {
     const ctx = createContextHistory();
 
     ctx.push("/a/");
     ctx.push("/b/");
     ctx.push("/c/");
 
+    // cursor=2, root entry '/a/' != default '/' → offset=1 → effectiveDepth=3
     expect(ctx.canGoBack(1)).toBe(true);
     expect(ctx.canGoBack(2)).toBe(true);
-    expect(ctx.canGoBack(3)).toBe(false);
+    expect(ctx.canGoBack(3)).toBe(true);
+    expect(ctx.canGoBack(4)).toBe(false);
     expect(ctx.canGoForward(1)).toBe(false);
+  });
+
+  it("canGoBack with rootHref matching root entry does not add offset", () => {
+    const ctx = createContextHistory();
+    ctx.registerContext("feed", "/tabs/feed", tabConfig);
+    ctx.handleSetCurrentTab("feed", "/tabs/feed/", "/tabs/feed/");
+
+    ctx.push("/tabs/feed/");
+    ctx.push("/tabs/feed/page2/");
+
+    // cursor=1, root entry matches rootHref → no offset → effectiveDepth=1
+    expect(ctx.canGoBack(1)).toBe(true);
+    expect(ctx.canGoBack(2)).toBe(false);
+  });
+
+  it("canGoBack with rootHref not matching root entry adds offset", () => {
+    const ctx = createContextHistory();
+    ctx.registerContext("feed", "/tabs/feed", tabConfig);
+    ctx.handleSetCurrentTab("feed", "/tabs/feed/deep/", "/tabs/feed/");
+
+    ctx.push("/tabs/feed/deep/");
+
+    // cursor=0, root '/tabs/feed/deep/' != rootHref '/tabs/feed/' → offset=1
+    expect(ctx.canGoBack(1)).toBe(true);
+    expect(ctx.canGoBack(2)).toBe(false);
   });
 
   it("parses search without leading question mark", () => {
@@ -149,19 +179,77 @@ describe("Context History (Chunk B stack operations)", () => {
 });
 
 describe("Context History (Chunk C navigation algorithms)", () => {
-  it("performBack decrements within context and blocks at root when configured", () => {
+  it("performBack decrements cursor within context", () => {
     const ctx = createContextHistory();
     ctx.registerContext("feed", "/tabs/feed", tabConfig);
 
-    ctx.push("/login/");
     ctx.push("/tabs/feed/");
     ctx.push("/tabs/feed/details/");
 
     expect(ctx.performBack()).toBe("/tabs/feed/");
     expect(ctx.currentEntry()?.pathname).toBe("/tabs/feed/");
+  });
 
+  it("performBack at cursor 0 with rootHref matching current entry blocks", () => {
+    const ctx = createContextHistory();
+    ctx.registerContext("feed", "/tabs/feed", tabConfig);
+    // Simulate IonTabBar setting rootHref
+    ctx.handleSetCurrentTab("feed", "/tabs/feed/", "/tabs/feed/");
+
+    ctx.push("/tabs/feed/");
+
+    // Already at tab root → blocked
     expect(ctx.performBack()).toBeNull();
     expect(ctx.currentEntry()?.pathname).toBe("/tabs/feed/");
+  });
+
+  it("performBack at cursor 0 falls back to rootHref for deep-linked tab page", () => {
+    const ctx = createContextHistory();
+    ctx.registerContext("feed", "/tabs/feed", tabConfig);
+    ctx.handleSetCurrentTab("feed", "/tabs/feed/deep/", "/tabs/feed/");
+
+    ctx.push("/tabs/feed/deep/");
+
+    // Deep-linked page backs to tab root
+    expect(ctx.performBack()).toBe("/tabs/feed/");
+  });
+
+  it("performBack tab context ignores passed defaultHref (rootHref wins)", () => {
+    const ctx = createContextHistory();
+    ctx.registerContext("feed", "/tabs/feed", tabConfig);
+    ctx.handleSetCurrentTab("feed", "/tabs/feed/deep/", "/tabs/feed/");
+
+    ctx.push("/tabs/feed/deep/");
+
+    // rootHref wins — defaultHref is ignored in tab contexts
+    expect(ctx.performBack("/other/")).toBe("/tabs/feed/");
+  });
+
+  it("performBack at cursor 0 in non-tab context uses defaultHref", () => {
+    const ctx = createContextHistory();
+
+    ctx.push("/deep-link/");
+
+    // Non-tab: no rootHref, falls through to defaultHref
+    expect(ctx.performBack("/home/")).toBe("/home/");
+  });
+
+  it("performBack at cursor 0 in non-tab context defaults to /", () => {
+    const ctx = createContextHistory();
+
+    ctx.push("/deep-link/");
+
+    // Non-tab, no defaultHref → falls back to '/'
+    expect(ctx.performBack()).toBe("/");
+  });
+
+  it("performBack at cursor 0 blocks when already at default target", () => {
+    const ctx = createContextHistory();
+
+    ctx.push("/");
+
+    // Already at '/' → blocked
+    expect(ctx.performBack()).toBeNull();
   });
 
   it("performForward advances once and returns null at top", () => {
@@ -191,12 +279,14 @@ describe("Context History (Chunk C navigation algorithms)", () => {
   it("go(-1) and go(-N) move back with partial completion semantics", () => {
     const ctx = createContextHistory();
     ctx.registerContext("feed", "/tabs/feed", tabConfig);
+    ctx.handleSetCurrentTab("feed", "/tabs/feed/", "/tabs/feed/");
 
     ctx.push("/tabs/feed/");
     ctx.push("/tabs/feed/one/");
     ctx.push("/tabs/feed/two/");
 
     expect(ctx.go(-1)).toBe("/tabs/feed/one/");
+    // At cursor 0, rootHref matches root entry → performBack returns null → stops
     expect(ctx.go(-5)).toBe("/tabs/feed/");
     expect(ctx.currentEntry()?.pathname).toBe("/tabs/feed/");
   });
@@ -204,15 +294,16 @@ describe("Context History (Chunk C navigation algorithms)", () => {
   it("go(-N) returns null with no mutation when first step is blocked", () => {
     const ctx = createContextHistory();
     ctx.registerContext("feed", "/tabs/feed", tabConfig);
+    ctx.handleSetCurrentTab("feed", "/tabs/feed/", "/tabs/feed/");
 
-    ctx.push("/login/");
     ctx.push("/tabs/feed/");
 
+    // At tab root with matching rootHref → blocked on first step
     expect(ctx.go(-1)).toBeNull();
     expect(ctx.currentEntry()?.pathname).toBe("/tabs/feed/");
   });
 
-  it("go(+N) clamps to top and returns null when no movement", () => {
+  it("go(+N) replays performForward and returns null when no movement", () => {
     const ctx = createContextHistory();
 
     ctx.push("/a/");
@@ -240,9 +331,12 @@ describe("Context History (Chunk D tab/reset/snapshot/output)", () => {
   it("changeTab synthesizes first entry for empty context and resumes existing stacks", () => {
     const ctx = createContextHistory();
     ctx.registerContext("feed", "/tabs/feed", tabConfig);
+    // Set rootHref so tab root back is terminal
+    ctx.handleSetCurrentTab("feed", "/tabs/feed/", "/tabs/feed/");
 
     expect(ctx.changeTab("feed", "/tabs/feed/")).toBe("/tabs/feed/");
     expect(ctx.currentEntry()?.pathname).toBe("/tabs/feed/");
+    // Tab root matches rootHref → canGoBack is false
     expect(ctx.canGoBack(1)).toBe(false);
 
     ctx.push("/tabs/feed/page2/");
@@ -255,6 +349,7 @@ describe("Context History (Chunk D tab/reset/snapshot/output)", () => {
   it("resetTab resets active and inactive tabs and clears surviving root originContext", () => {
     const ctx = createContextHistory();
     ctx.registerContext("feed", "/tabs/feed", tabConfig);
+    ctx.handleSetCurrentTab("feed", "/tabs/feed/", "/tabs/feed/");
 
     ctx.push("/login/");
     ctx.push("/tabs/feed/");
@@ -262,6 +357,7 @@ describe("Context History (Chunk D tab/reset/snapshot/output)", () => {
 
     expect(ctx.resetTab("feed", "/tabs/feed/")).toBe("/tabs/feed/");
     expect(ctx.currentEntry()?.pathname).toBe("/tabs/feed/");
+    // Tab root matches rootHref → back is blocked
     expect(ctx.performBack()).toBeNull();
 
     ctx.push("/login/again/");
@@ -273,6 +369,7 @@ describe("Context History (Chunk D tab/reset/snapshot/output)", () => {
   it("resetAll clears stacks and creates a fresh entry in matched target context", () => {
     const ctx = createContextHistory();
     ctx.registerContext("feed", "/tabs/feed", tabConfig);
+    ctx.handleSetCurrentTab("feed", "/tabs/feed/", "/tabs/feed/");
 
     ctx.push("/tabs/feed/");
     ctx.push("/tabs/feed/page/");
@@ -280,9 +377,11 @@ describe("Context History (Chunk D tab/reset/snapshot/output)", () => {
 
     expect(ctx.resetAll("/login/")).toBe("/login/");
     expect(ctx.currentEntry()?.pathname).toBe("/login/");
-    expect(ctx.canGoBack(1)).toBe(false);
+    // Default context: '/login/' != '/' → canGoBack(1) is true (fallback to '/')
+    expect(ctx.canGoBack(1)).toBe(true);
 
     expect(ctx.changeTab("feed", "/tabs/feed/")).toBe("/tabs/feed/");
+    // Tab root matches rootHref → canGoBack is false
     expect(ctx.canGoBack(1)).toBe(false);
   });
 

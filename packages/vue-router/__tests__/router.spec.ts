@@ -157,12 +157,14 @@ describe("createIonRouter integration", () => {
     expect(h.router.replace).toHaveBeenLastCalledWith("/a");
     h.commitNavigation("/a", { replaced: true });
 
+    // At cursor 0 in default context, performBack("/fallback") returns
+    // "/fallback" (the caller-supplied defaultHref) since root "/a" != "/fallback"
     h.nav.handleNavigateBack("/fallback");
-    expect(h.router.push).toHaveBeenLastCalledWith("/fallback");
-    h.commitNavigation("/fallback");
+    expect(h.router.replace).toHaveBeenLastCalledWith("/fallback");
+    h.commitNavigation("/fallback", { replaced: true });
     expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/fallback");
     expect(h.nav.getCurrentRouteInfo()?.routerDirection).toBe("back");
-    expect(h.nav.getCurrentRouteInfo()?.routerAction).toBe("push");
+    expect(h.nav.getCurrentRouteInfo()?.routerAction).toBe("pop");
   });
 
   it("intercepts browser back/forward in beforeEach", () => {
@@ -204,7 +206,9 @@ describe("createIonRouter integration", () => {
 
     h.commitNavigation("/a", { replaced: true });
     expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/a");
-    expect(h.nav.canGoBack()).toBe(false);
+    // Default context at cursor 0: '/a' != '/' → fallback-to-default adds +1
+    expect(h.nav.canGoBack()).toBe(true);
+    expect(h.nav.canGoBack(2)).toBe(false);
     expect(h.nav.canGoForward(2)).toBe(true);
 
     h.emitBrowserDelta(2);
@@ -234,7 +238,8 @@ describe("createIonRouter integration", () => {
       h.commitNavigation("/a", { replaced: true });
 
       expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/a");
-      expect(h.nav.canGoBack()).toBe(false);
+      // Default context at cursor 0: '/a' != '/' → canGoBack true
+      expect(h.nav.canGoBack()).toBe(true);
       expect(h.nav.canGoForward(2)).toBe(true);
 
       h.router.go(2);
@@ -357,7 +362,8 @@ describe("createIonRouter integration", () => {
 
     expect(listener).toHaveBeenCalledTimes(2);
     expect(h.nav.getCurrentRouteInfo()).toBe(previousRouteInfo);
-    expect(h.nav.canGoBack()).toBe(false);
+    // Only entry is "/a" in default context, root '/a' != '/' → canGoBack true
+    expect(h.nav.canGoBack()).toBe(true);
   });
 
   it("produces initial route info even when the first confirmed route matches the current URL", () => {

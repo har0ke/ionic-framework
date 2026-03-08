@@ -289,7 +289,17 @@ export const createContextHistory = () => {
     return entry;
   };
 
-  const canGoBack = (deep = 1): boolean => {
+  /**
+   * Check whether going back `deep` steps is possible.
+   *
+   * Uses cursor position plus an offset of 1 if the active context would
+   * still perform one fallback-to-default step at root (i.e. the root
+   * entry does not match the effective default target).
+   *
+   * @param deep - Number of back steps to check (default 1)
+   * @param defaultHref - Optional fallback target for non-tab contexts
+   */
+  const canGoBack = (deep = 1, defaultHref?: string): boolean => {
     if (deep < 1) {
       return true;
     }
@@ -299,7 +309,8 @@ export const createContextHistory = () => {
       return false;
     }
 
-    return stack.cursor >= deep;
+    const effectiveDepth = stack.cursor + (contextWouldGoToDefault(defaultHref) ? 1 : 0);
+    return effectiveDepth >= deep;
   };
 
   const canGoForward = (deep = 1): boolean => {
@@ -316,21 +327,87 @@ export const createContextHistory = () => {
   };
 
   /**
+   * Compute the effective default target for the active context at cursor 0.
+   *
+   * Precedence:
+   * 1. Tab context rootHref (from IonTabButton.href) — if present, wins.
+   *    In a tab context, do NOT fall through to defaultHref or '/'.
+   * 2. Caller-supplied defaultHref (from IonBackButton or handleNavigateBack).
+   * 3. Fallback: '/'
+   *
+   * @returns The default target pathname, or undefined if in a tab context
+   *   with no rootHref (shouldn't happen in normal operation but handled
+   *   defensively).
+   */
+  const getEffectiveDefault = (defaultHref?: string): string => {
+    const stack = ensureContextStack(activeContext);
+
+    // Tab context rootHref wins — back is terminal at tab root.
+    if (stack.rootHref !== undefined) {
+      return stack.rootHref;
+    }
+
+    return defaultHref ?? "/";
+  };
+
+  /**
+   * Check whether back at cursor 0 would perform a fallback-to-default
+   * step (i.e. the root entry does not already match the effective default).
+   *
+   * Used by canGoBack() to add +1 to the effective depth.
+   */
+  const contextWouldGoToDefault = (defaultHref?: string): boolean => {
+    const stack = ensureContextStack(activeContext);
+    if (stack.entries.length === 0) {
+      return false;
+    }
+
+    const rootEntry = stack.entries[0];
+    const effectiveDefault = getEffectiveDefault(defaultHref);
+    return entryToPath(rootEntry) !== effectiveDefault;
+  };
+
+  /**
    * Execute a back navigation within the active context.
    *
-   * If cursor > 0, decrements the cursor and returns the target path.
-   * If cursor === 0, back is blocked and returns null.
+   * Decision order:
+   * 1. cursor > 0: decrement cursor, return that entry.
+   * 2. cursor === 0: compute effective default target:
+   *    - rootHref (tab context) > defaultHref > '/'
+   *    - If current root entry already matches default, return null (blocked).
+   *    - Otherwise, return the default target path.
+   *
+   * Important: in a tab context with rootHref, defaultHref and '/' are never
+   * used. Tab-root back is terminal once the tab root is reached.
    *
    * Never switches context. originContext is inert historical metadata.
+   *
+   * @param defaultHref - Optional fallback target (from IonBackButton or caller)
+   * @returns Target path string, or null if back is blocked
    */
-  const performBack = (): string | null => {
+  const performBack = (defaultHref?: string): string | null => {
     const stack = ensureContextStack(activeContext);
-    if (stack.entries.length === 0 || stack.cursor <= 0) {
+    if (stack.entries.length === 0) {
       return null;
     }
 
-    stack.cursor -= 1;
-    return entryToPath(stack.entries[stack.cursor]);
+    // Step 1: cursor > 0 → decrement
+    if (stack.cursor > 0) {
+      stack.cursor -= 1;
+      return entryToPath(stack.entries[stack.cursor]);
+    }
+
+    // Step 2: cursor === 0 → fallback to default
+    const effectiveDefault = getEffectiveDefault(defaultHref);
+    const rootEntry = stack.entries[0];
+
+    // Step 3: already at default → blocked
+    if (entryToPath(rootEntry) === effectiveDefault) {
+      return null;
+    }
+
+    // Step 4: resolve to default target
+    return effectiveDefault;
   };
 
   const performForward = (): string | null => {
@@ -344,15 +421,19 @@ export const createContextHistory = () => {
   };
 
   /**
-   * Multi-step traversal within the active context.
+   * Multi-step traversal. A thin wrapper over performBack/performForward.
    *
-   * For negative deltas: replays performBack() up to abs(delta) times,
-   * stopping at the first null (blocked). If the first step blocks,
-   * returns null. Otherwise returns the final reached path.
+   * For negative deltas: replays performBack(defaultHref) up to abs(delta)
+   * times, stopping at the first null. If the first step blocks, returns null.
    *
-   * For positive deltas: advances cursor by delta (clamped to stack top).
+   * For positive deltas: replays performForward() up to delta times,
+   * stopping at the first null.
+   *
+   * @param delta - Number of steps (negative = back, positive = forward)
+   * @param defaultHref - Optional fallback target for non-tab contexts
+   * @returns Final reached path, or null if first step was blocked
    */
-  const go = (delta: number): string | null => {
+  const go = (delta: number, defaultHref?: string): string | null => {
     const normalizedDelta = Math.trunc(delta);
 
     if (normalizedDelta === 0) {
@@ -361,43 +442,32 @@ export const createContextHistory = () => {
 
     if (normalizedDelta < 0) {
       const steps = Math.abs(normalizedDelta);
-      const stack = ensureContextStack(activeContext);
-      const previousCursor = stack.cursor;
-
-      let completedSteps = 0;
       let finalPathname: string | null = null;
 
       for (let i = 0; i < steps; i += 1) {
-        const pathname = performBack();
+        const pathname = performBack(defaultHref);
         if (pathname === null) {
-          if (completedSteps === 0) {
-            // First step blocked -- restore cursor and cancel entirely
-            stack.cursor = previousCursor;
-            return null;
-          }
-          // Partial completion -- stop at last successful position
-          return finalPathname;
+          // First step blocked → cancel entirely; partial → stop here
+          return i === 0 ? null : finalPathname;
         }
-
-        completedSteps += 1;
         finalPathname = pathname;
       }
 
       return finalPathname;
     }
 
-    const stack = ensureContextStack(activeContext);
-    if (stack.entries.length === 0) {
-      return null;
+    // Positive delta: replay performForward()
+    let finalPathname: string | null = null;
+
+    for (let i = 0; i < normalizedDelta; i += 1) {
+      const pathname = performForward();
+      if (pathname === null) {
+        return i === 0 ? null : finalPathname;
+      }
+      finalPathname = pathname;
     }
 
-    const targetCursor = Math.min(stack.cursor + normalizedDelta, stack.entries.length - 1);
-    if (targetCursor === stack.cursor) {
-      return null;
-    }
-
-    stack.cursor = targetCursor;
-    return entryToPath(stack.entries[stack.cursor]);
+    return finalPathname;
   };
 
   const changeTab = (tab: string, defaultHref: string): string => {
