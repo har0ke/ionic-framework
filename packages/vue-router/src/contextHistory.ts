@@ -596,16 +596,29 @@ export const createContextHistory = () => {
    * back is blocked. This controls swipe-back availability and the
    * back button visibility (!!pushedByRoute === showGoBack).
    *
-   * With previous-context removed, this is purely cursor-based:
-   * cursor > 0 → previous entry pathname, else undefined.
+   * Uses implicit defaults only (rootHref if present, else '/'):
+   * - cursor > 0 → previous entry pathname
+   * - cursor === 0 → implicit default target, unless the root entry
+   *   already matches it (in which case back is blocked → undefined)
    */
   const derivePushedByRoute = (): string | undefined => {
     const stack = ensureContextStack(activeContext);
-    if (stack.entries.length === 0 || stack.cursor <= 0) {
+    if (stack.entries.length === 0) {
       return undefined;
     }
 
-    return stack.entries[stack.cursor - 1]?.pathname;
+    if (stack.cursor > 0) {
+      return stack.entries[stack.cursor - 1]?.pathname;
+    }
+
+    // cursor === 0: check implicit default (no caller-specific defaultHref)
+    const implicitDefault = getEffectiveDefault();
+    const rootEntry = stack.entries[0];
+    if (entryToPath(rootEntry) === implicitDefault) {
+      return undefined; // already at the implicit default → blocked
+    }
+
+    return implicitDefault;
   };
 
   const produceCurrentRouteInfo = (

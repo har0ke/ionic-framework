@@ -424,20 +424,41 @@ describe("Context History (Chunk D tab/reset/snapshot/output)", () => {
     ]);
   });
 
-  it("derivePushedByRoute returns previous entry or undefined at root", () => {
+  it("derivePushedByRoute returns previous entry, implicit default, or undefined", () => {
     const ctx = createContextHistory();
     ctx.registerContext("feed", "/tabs/feed", tabConfig);
 
+    // Default context at cursor 0: root entry '/a/' !== implicit default '/'
+    // → derivePushedByRoute returns '/' (the implicit default)
     ctx.push("/a/");
+    expect(ctx.derivePushedByRoute()).toBe("/");
+
     ctx.push("/b/");
+    // cursor > 0 → previous entry
     expect(ctx.derivePushedByRoute()).toBe("/a/");
 
     ctx.push("/tabs/feed/");
-    // At tab root (cursor 0), back is blocked → undefined
+    // Switched to feed context. Set rootHref so tab root is recognized.
+    ctx.handleSetCurrentTab("feed", "/tabs/feed/", "/tabs/feed/");
+    // At tab root with rootHref matching → back is blocked → undefined
     expect(ctx.derivePushedByRoute()).toBeUndefined();
 
     ctx.push("/tabs/feed/page2/");
+    // cursor > 0 → previous entry
     expect(ctx.derivePushedByRoute()).toBe("/tabs/feed/");
+  });
+
+  it("derivePushedByRoute returns undefined when root entry matches implicit default", () => {
+    const ctx = createContextHistory();
+
+    // Default context: push '/' as root. Implicit default is '/'.
+    // Root entry matches → back is blocked → undefined
+    ctx.push("/");
+    expect(ctx.derivePushedByRoute()).toBeUndefined();
+
+    // Push something else, then go back to cursor 0
+    ctx.push("/a/");
+    expect(ctx.derivePushedByRoute()).toBe("/");
   });
 
   it("produceCurrentRouteInfo maps fields and applies animation precedence", () => {
