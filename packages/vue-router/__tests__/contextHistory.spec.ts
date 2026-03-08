@@ -347,3 +347,179 @@ describe("Context History (Chunk C navigation algorithms)", () => {
     expect(ctx.go(1)).toBe("/b/?q=2");
   });
 });
+
+describe("Context History (Chunk D tab/reset/snapshot/output)", () => {
+  it("changeTab synthesizes first entry for empty context and resumes existing stacks", () => {
+    const ctx = createContextHistory();
+    ctx.registerContext("feed", "/tabs/feed", tabConfig);
+
+    expect(ctx.changeTab("feed", "/tabs/feed/")).toBe("/tabs/feed/");
+    expect(ctx.currentEntry()?.pathname).toBe("/tabs/feed/");
+    expect(ctx.canGoBack(1)).toBe(false);
+
+    ctx.push("/tabs/feed/page2/");
+    ctx.push("/login/");
+
+    expect(ctx.changeTab("feed", "/tabs/feed/")).toBe("/tabs/feed/page2/");
+    expect(ctx.currentEntry()?.pathname).toBe("/tabs/feed/page2/");
+  });
+
+  it("resetTab resets active and inactive tabs and clears surviving root originContext", () => {
+    const ctx = createContextHistory();
+    ctx.registerContext("feed", "/tabs/feed", tabConfig);
+
+    ctx.push("/login/");
+    ctx.push("/tabs/feed/");
+    ctx.push("/tabs/feed/page2/");
+
+    expect(ctx.resetTab("feed", "/tabs/feed/")).toBe("/tabs/feed/");
+    expect(ctx.currentEntry()?.pathname).toBe("/tabs/feed/");
+    expect(ctx.performBack()).toBeNull();
+
+    ctx.push("/login/again/");
+    expect(ctx.resetTab("feed", "/tabs/feed/")).toBeNull();
+    expect(ctx.changeTab("feed", "/tabs/feed/")).toBe("/tabs/feed/");
+    expect(ctx.canGoBack(1)).toBe(false);
+  });
+
+  it("resetAll clears stacks and creates a fresh entry in matched target context", () => {
+    const ctx = createContextHistory();
+    ctx.registerContext("feed", "/tabs/feed", tabConfig);
+
+    ctx.push("/tabs/feed/");
+    ctx.push("/tabs/feed/page/");
+    ctx.push("/login/");
+
+    expect(ctx.resetAll("/login/")).toBe("/login/");
+    expect(ctx.currentEntry()?.pathname).toBe("/login/");
+    expect(ctx.canGoBack(1)).toBe(false);
+
+    expect(ctx.changeTab("feed", "/tabs/feed/")).toBe("/tabs/feed/");
+    expect(ctx.canGoBack(1)).toBe(false);
+  });
+
+  it("captureState and restoreState restore active context/cursors and savedEntries", () => {
+    const ctx = createContextHistory();
+    const a = ctx.push("/a/");
+    const b = ctx.push("/b/");
+    const c = ctx.push("/c/");
+
+    expect(ctx.go(-2)).toBe("/a/");
+
+    const snapshot = ctx.captureState([{ context: "default", entries: [b, c] }]);
+
+    ctx.resetTab("default", "/a/");
+    expect(ctx.canGoForward(1)).toBe(false);
+
+    ctx.restoreState(snapshot);
+    expect(ctx.currentEntry()?.pathname).toBe("/a/");
+    expect(ctx.performForward()).toBe("/b/");
+    expect(ctx.performForward()).toBe("/c/");
+
+    expect(a.pathname).toBe("/a/");
+  });
+
+  it("derivePushedByRoute handles within-context, root-block, previous-context and origin cursor updates", () => {
+    const ctx = createContextHistory();
+    ctx.registerContext("feed", "/tabs/feed", tabConfig);
+
+    ctx.push("/a/");
+    ctx.push("/b/");
+    expect(ctx.derivePushedByRoute()).toBe("/a/");
+
+    ctx.push("/tabs/feed/");
+    expect(ctx.derivePushedByRoute()).toBeUndefined();
+
+    ctx.push("/tabs/feed/page2/");
+    ctx.push("/login/");
+    expect(ctx.derivePushedByRoute()).toBe("/tabs/feed/page2/");
+
+    ctx.resetTab("feed", "/tabs/feed/");
+    expect(ctx.derivePushedByRoute()).toBe("/tabs/feed/");
+  });
+
+  it("produceCurrentRouteInfo maps fields and applies animation precedence", () => {
+    const ctx = createContextHistory();
+    const enteringAnimation = (() => undefined) as any;
+    const leavingAnimation = (() => undefined) as any;
+    const overrideAnimation = (() => undefined) as any;
+
+    ctx.push("/a/");
+    const entering = ctx.push("/b/", { routerAnimation: enteringAnimation });
+
+    const leaving = {
+      id: "leave",
+      pathname: "/a/",
+      search: "",
+      params: undefined,
+      pushedByRoute: undefined,
+      routerAction: "push",
+      routerDirection: "forward",
+      routerAnimation: leavingAnimation,
+      lastPathname: "/root/",
+      prevRouteLastPathname: "/older/",
+      delta: undefined,
+      tab: "default",
+    } as any;
+
+    const backInfo = ctx.produceCurrentRouteInfo(entering, leaving, { direction: "back" });
+    expect(backInfo.routerAction).toBe("pop");
+    expect(backInfo.routerDirection).toBe("back");
+    expect(backInfo.routerAnimation).toBe(leavingAnimation);
+    expect(backInfo.lastPathname).toBe("/a/");
+    expect(backInfo.prevRouteLastPathname).toBe("/root/");
+    expect(backInfo.tab).toBe("default");
+    expect(backInfo.delta).toBeUndefined();
+
+    const rootInfo = ctx.produceCurrentRouteInfo(entering, leaving, { direction: "root" });
+    expect(rootInfo.routerAction).toBe("replace");
+    expect(rootInfo.routerDirection).toBe("root");
+
+    const noneInfo = ctx.produceCurrentRouteInfo(entering, leaving, { direction: "none" });
+    expect(noneInfo.routerAction).toBe("push");
+
+    const overrideInfo = ctx.produceCurrentRouteInfo(entering, leaving, {
+      direction: "none",
+      animation: overrideAnimation,
+      action: "replace",
+    } as any);
+    expect(overrideInfo.routerAction).toBe("replace");
+    expect(overrideInfo.routerAnimation).toBe(overrideAnimation);
+  });
+
+  it("handleSetCurrentTab registers context, moves matching default entries, and is idempotent", () => {
+    const ctx = createContextHistory();
+
+    ctx.push("/tabs/feed/");
+    ctx.push("/tabs/feed/page2/");
+    ctx.push("/login/");
+    ctx.go(-1);
+
+    ctx.handleSetCurrentTab("feed", "/tabs/feed/page2/");
+    expect(ctx.currentEntry()?.pathname).toBe("/tabs/feed/page2/");
+    expect(ctx.currentEntry()?.context).toBe("feed");
+    expect(ctx.performBack()).toBe("/tabs/feed/");
+
+    const before = JSON.stringify(ctx.snapshot());
+    ctx.handleSetCurrentTab("feed", "/tabs/feed/page2/");
+    expect(JSON.stringify(ctx.snapshot())).toBe(before);
+  });
+
+  it("snapshot returns expected structure and backTarget links", () => {
+    const ctx = createContextHistory();
+    ctx.registerContext("feed", "/tabs/feed", tabConfig);
+
+    ctx.push("/tabs/feed/");
+    ctx.push("/tabs/feed/page2/");
+    ctx.push("/login/");
+
+    const snap = ctx.snapshot();
+
+    expect(snap.activeContext).toBe("default");
+    expect(snap.contexts.feed.entries[0].url).toBe("/tabs/feed/");
+    expect(snap.contexts.feed.entries[0].backTarget).toBeNull();
+    expect(snap.contexts.feed.entries[1].backTarget).toEqual({ context: "feed", cursor: 0 });
+    expect(snap.contexts.default.entries[0].url).toBe("/login/");
+    expect(snap.contexts.default.entries[0].backTarget).toEqual({ context: "feed", cursor: 1 });
+  });
+});

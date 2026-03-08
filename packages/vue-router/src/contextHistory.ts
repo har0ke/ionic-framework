@@ -1,4 +1,17 @@
-import type { NavEntry, ContextConfig, ContextStack, PushOptions, UnmatchedBehavior } from "./types";
+import type {
+  ContextConfig,
+  ContextHistorySnapshot,
+  ContextStack,
+  CurrentRouteInfo,
+  NavEntry,
+  NavigationContext,
+  PushOptions,
+  RouteAction,
+  RouteDirection,
+  SavedEntries,
+  StateSnapshot,
+  UnmatchedBehavior,
+} from "./types";
 
 const DEFAULT_CONTEXT_ID = "default" as const;
 
@@ -6,6 +19,13 @@ const DEFAULT_CONTEXT_CONFIG: ContextConfig = {
   backBehavior: "within-context",
   rootBackBehavior: "previous-context",
   clearOnExternalPush: true,
+  unmatchedBehavior: "default",
+};
+
+const TAB_CONTEXT_CONFIG: ContextConfig = {
+  backBehavior: "within-context",
+  rootBackBehavior: "block",
+  clearOnExternalPush: false,
   unmatchedBehavior: "default",
 };
 
@@ -209,6 +229,45 @@ export const createContextHistory = () => {
   };
 
   const entryToPath = (entry: NavEntry): string => (entry.search ? `${entry.pathname}?${entry.search}` : entry.pathname);
+
+  const resolveOriginTarget = (originContextId: string | null): { context: string; cursor: number } | null => {
+    if (!originContextId) {
+      return null;
+    }
+
+    const originStack = contexts.get(originContextId);
+    if (!originStack || originStack.entries.length === 0) {
+      return null;
+    }
+
+    const originEntry = originStack.entries[originStack.cursor];
+    if (!originEntry) {
+      return null;
+    }
+
+    return {
+      context: originContextId,
+      cursor: originStack.cursor,
+    };
+  };
+
+  const mapActionFromDirection = (direction: RouteDirection): RouteAction => {
+    switch (direction) {
+      case "back":
+        return "pop";
+      case "root":
+        return "replace";
+      case "forward":
+      case "none":
+      default:
+        return "push";
+    }
+  };
+
+  const cloneEntry = (entry: NavEntry): NavEntry => ({
+    ...entry,
+    params: entry.params ? { ...entry.params } : undefined,
+  });
 
   const push = (
     route: RouteInput,
@@ -430,11 +489,294 @@ export const createContextHistory = () => {
     return entryToPath(stack.entries[stack.cursor]);
   };
 
+  const changeTab = (tab: string, defaultHref: string): string => {
+    const targetStack = ensureContextStack(tab);
+
+    if (targetStack.entries.length === 0) {
+      const route = parseRouteInput(defaultHref);
+      const synthesized = createNavEntry(tab, route, {
+        originContext: null,
+        backBehavior: null,
+        rootBackBehavior: null,
+        routerAnimation: undefined,
+      });
+
+      targetStack.entries.push(synthesized);
+      targetStack.cursor = 0;
+    }
+
+    activeContext = tab;
+    return entryToPath(targetStack.entries[targetStack.cursor]);
+  };
+
+  const resetTab = (tab: string, defaultHref?: string): string | null => {
+    const targetStack = ensureContextStack(tab);
+    const rootEntry = targetStack.entries[0];
+    const rootMatchesDefaultHref = Boolean(rootEntry) && (defaultHref === undefined || entryToPath(rootEntry) === defaultHref);
+
+    if (rootEntry && rootMatchesDefaultHref) {
+      targetStack.entries = [rootEntry];
+    } else {
+      targetStack.entries = [];
+      if (defaultHref) {
+        const route = parseRouteInput(defaultHref);
+        targetStack.entries.push(
+          createNavEntry(tab, route, {
+            originContext: null,
+            backBehavior: null,
+            rootBackBehavior: null,
+            routerAnimation: undefined,
+          })
+        );
+      }
+    }
+
+    targetStack.cursor = targetStack.entries.length > 0 ? 0 : 0;
+    if (targetStack.entries[0]) {
+      targetStack.entries[0].originContext = null;
+    }
+
+    if (activeContext !== tab) {
+      return null;
+    }
+
+    const activeEntry = targetStack.entries[targetStack.cursor];
+    return activeEntry ? entryToPath(activeEntry) : null;
+  };
+
+  const resetAll = (redirectTo: string): string => {
+    for (const stack of contexts.values()) {
+      stack.entries = [];
+      stack.cursor = 0;
+    }
+
+    const route = parseRouteInput(redirectTo);
+    const targetContext = matchContext(route.pathname);
+    const targetStack = ensureContextStack(targetContext);
+    const entry = createNavEntry(targetContext, route, {
+      originContext: null,
+      backBehavior: null,
+      rootBackBehavior: null,
+      routerAnimation: undefined,
+    });
+
+    targetStack.entries.push(entry);
+    targetStack.cursor = 0;
+    activeContext = targetContext;
+
+    return entryToPath(entry);
+  };
+
+  const captureState = (savedEntries?: SavedEntries[]): StateSnapshot => {
+    const cursors: StateSnapshot["cursors"] = {};
+    for (const [id, stack] of contexts.entries()) {
+      cursors[id] = stack.cursor;
+    }
+
+    return {
+      activeContext,
+      cursors,
+      savedEntries: savedEntries?.map((saved) => ({
+        context: saved.context,
+        entries: saved.entries.map(cloneEntry),
+      })),
+    };
+  };
+
+  const restoreState = (snapshot: StateSnapshot): void => {
+    activeContext = snapshot.activeContext;
+
+    for (const [id, cursor] of Object.entries(snapshot.cursors)) {
+      const stack = ensureContextStack(id);
+      stack.cursor = cursor;
+    }
+
+    for (const saved of snapshot.savedEntries ?? []) {
+      const stack = ensureContextStack(saved.context);
+      stack.entries.push(...saved.entries.map(cloneEntry));
+    }
+  };
+
+  const derivePushedByRoute = (): string | undefined => {
+    const stack = ensureContextStack(activeContext);
+    if (stack.entries.length === 0) {
+      return undefined;
+    }
+
+    const entry = stack.entries[stack.cursor];
+    if (!entry) {
+      return undefined;
+    }
+
+    const effectiveBackBehavior = entry.backBehavior ?? stack.config.backBehavior;
+    const effectiveRootBackBehavior = entry.rootBackBehavior ?? stack.config.rootBackBehavior;
+
+    if (stack.cursor > 0) {
+      if (effectiveBackBehavior === "previous-context") {
+        const originTarget = resolveOriginTarget(entry.originContext);
+        if (originTarget) {
+          return contexts.get(originTarget.context)?.entries[originTarget.cursor]?.pathname;
+        }
+      }
+
+      return stack.entries[stack.cursor - 1]?.pathname;
+    }
+
+    if (effectiveRootBackBehavior === "previous-context") {
+      const originTarget = resolveOriginTarget(entry.originContext);
+      if (originTarget) {
+        return contexts.get(originTarget.context)?.entries[originTarget.cursor]?.pathname;
+      }
+    }
+
+    return undefined;
+  };
+
+  const produceCurrentRouteInfo = (
+    entering: NavEntry,
+    leaving: CurrentRouteInfo | undefined,
+    navCtx: NavigationContext & { action?: RouteAction }
+  ): CurrentRouteInfo => {
+    const direction = navCtx.direction ?? "forward";
+    const action = navCtx.action ?? mapActionFromDirection(direction);
+
+    return {
+      id: entering.id,
+      pathname: entering.pathname,
+      search: entering.search,
+      params: entering.params,
+      pushedByRoute: derivePushedByRoute(),
+      routerAction: action,
+      routerDirection: direction,
+      routerAnimation: navCtx.animation ?? (direction === "back" ? leaving?.routerAnimation : entering.routerAnimation),
+      lastPathname: leaving?.pathname ?? "",
+      prevRouteLastPathname: leaving?.lastPathname,
+      delta: undefined,
+      tab: activeContext,
+    };
+  };
+
+  const deriveTabPrefix = (tab: string, currentPathname: string): string => {
+    const pathname = currentPathname.split("?", 1)[0];
+    const segments = pathname.split("/").filter(Boolean);
+    const tabSegmentIndex = segments.indexOf(tab);
+
+    if (tabSegmentIndex === -1) {
+      return normalizePrefix(pathname || "/");
+    }
+
+    return normalizePrefix(`/${segments.slice(0, tabSegmentIndex + 1).join("/")}`);
+  };
+
+  const handleSetCurrentTab = (tab: string, currentPathname: string): void => {
+    if (registrations.has(tab)) {
+      return;
+    }
+
+    const prefix = deriveTabPrefix(tab, currentPathname);
+    registerContext(tab, prefix, TAB_CONTEXT_CONFIG);
+
+    const registration = registrations.get(tab);
+    if (!registration) {
+      return;
+    }
+
+    const defaultStack = ensureContextStack(DEFAULT_CONTEXT_ID);
+    const tabStack = ensureContextStack(tab);
+    const movedEntries: NavEntry[] = [];
+    let movedBeforeOrAtCursorCount = 0;
+    let movedCurrent = false;
+
+    defaultStack.entries = defaultStack.entries.filter((entry, index) => {
+      if (!prefixMatches(entry.pathname, registration.prefix)) {
+        return true;
+      }
+
+      if (index <= defaultStack.cursor) {
+        movedBeforeOrAtCursorCount += 1;
+      }
+
+      if (index === defaultStack.cursor) {
+        movedCurrent = true;
+      }
+
+      entry.context = tab;
+      movedEntries.push(entry);
+      return false;
+    });
+
+    if (movedEntries.length === 0) {
+      return;
+    }
+
+    tabStack.entries.push(...movedEntries);
+    tabStack.cursor = tabStack.entries.length - 1;
+
+    if (defaultStack.entries.length === 0) {
+      defaultStack.cursor = 0;
+    } else {
+      defaultStack.cursor = Math.max(0, defaultStack.cursor - movedBeforeOrAtCursorCount);
+      if (defaultStack.cursor > defaultStack.entries.length - 1) {
+        defaultStack.cursor = defaultStack.entries.length - 1;
+      }
+    }
+
+    if (activeContext === DEFAULT_CONTEXT_ID && (movedCurrent || defaultStack.entries.length === 0)) {
+      activeContext = tab;
+    }
+  };
+
+  const snapshot = (): ContextHistorySnapshot => {
+    const contextSnapshots: ContextHistorySnapshot["contexts"] = {};
+
+    for (const [id, stack] of contexts.entries()) {
+      contextSnapshots[id] = {
+        cursor: stack.cursor,
+        entries: stack.entries.map((entry, cursor) => {
+          const effectiveBackBehavior = entry.backBehavior ?? stack.config.backBehavior;
+          const effectiveRootBackBehavior = entry.rootBackBehavior ?? stack.config.rootBackBehavior;
+
+          let backTarget: { context: string; cursor: number } | null = null;
+          if (cursor > 0) {
+            if (effectiveBackBehavior === "previous-context") {
+              backTarget = resolveOriginTarget(entry.originContext);
+            }
+
+            if (!backTarget) {
+              backTarget = { context: id, cursor: cursor - 1 };
+            }
+          } else if (effectiveRootBackBehavior === "previous-context") {
+            backTarget = resolveOriginTarget(entry.originContext);
+          }
+
+          return {
+            url: entryToPath(entry),
+            backTarget,
+          };
+        }),
+      };
+    }
+
+    return {
+      activeContext,
+      contexts: contextSnapshots,
+    };
+  };
+
   return {
     registerContext,
     matchContext,
     push,
     replace,
+    changeTab,
+    resetTab,
+    resetAll,
+    captureState,
+    restoreState,
+    derivePushedByRoute,
+    produceCurrentRouteInfo,
+    handleSetCurrentTab,
+    snapshot,
     performBack,
     performForward,
     go,
