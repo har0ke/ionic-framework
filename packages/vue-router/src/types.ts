@@ -101,22 +101,14 @@ export interface NavigationInformation {
  * to compile while the rewrite is developed in parallel.
  */
 
-export type ContextBackBehavior = "within-context" | "previous-context";
-export type ContextRootBackBehavior = "block" | "previous-context";
 export type UnmatchedBehavior = "default" | "active";
 
 export interface ContextConfig {
-  backBehavior: ContextBackBehavior;
-  rootBackBehavior: ContextRootBackBehavior;
   clearOnExternalPush: boolean;
   unmatchedBehavior: UnmatchedBehavior;
 }
 
 export interface PushOptions {
-  // Entry overrides (stored on created NavEntry)
-  backBehavior?: ContextBackBehavior;
-  rootBackBehavior?: ContextRootBackBehavior;
-
   // Push-time overrides (consumed, not stored)
   unmatchedBehavior?: UnmatchedBehavior;
   clearOnExternalPush?: boolean;
@@ -132,10 +124,8 @@ export interface NavEntry {
   params: Record<string, any> | undefined;
 
   context: string;
+  /** Context active when this entry was pushed (cross-context only). Inert historical metadata. */
   originContext: string | null;
-
-  backBehavior: ContextBackBehavior | null;
-  rootBackBehavior: ContextRootBackBehavior | null;
 
   routerAnimation: AnimationBuilder | undefined;
 }

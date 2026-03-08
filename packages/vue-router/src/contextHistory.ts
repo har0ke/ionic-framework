@@ -10,21 +10,16 @@ import type {
   RouteDirection,
   SavedEntries,
   StateSnapshot,
-  UnmatchedBehavior,
 } from "./types";
 
 const DEFAULT_CONTEXT_ID = "default" as const;
 
 const DEFAULT_CONTEXT_CONFIG: ContextConfig = {
-  backBehavior: "within-context",
-  rootBackBehavior: "previous-context",
   clearOnExternalPush: true,
   unmatchedBehavior: "default",
 };
 
 const TAB_CONTEXT_CONFIG: ContextConfig = {
-  backBehavior: "within-context",
-  rootBackBehavior: "block",
   clearOnExternalPush: false,
   unmatchedBehavior: "default",
 };
@@ -145,8 +140,6 @@ export const createContextHistory = () => {
     route: ReturnType<typeof parseRouteInput>,
     source: {
       originContext: string | null;
-      backBehavior: PushOptions["backBehavior"] | null;
-      rootBackBehavior: PushOptions["rootBackBehavior"] | null;
       routerAnimation: PushOptions["routerAnimation"] | undefined;
     }
   ): NavEntry => ({
@@ -156,8 +149,6 @@ export const createContextHistory = () => {
     params: route.params,
     context,
     originContext: source.originContext,
-    backBehavior: source.backBehavior,
-    rootBackBehavior: source.rootBackBehavior,
     routerAnimation: source.routerAnimation,
   });
 
@@ -230,27 +221,6 @@ export const createContextHistory = () => {
 
   const entryToPath = (entry: NavEntry): string => (entry.search ? `${entry.pathname}?${entry.search}` : entry.pathname);
 
-  const resolveOriginTarget = (originContextId: string | null): { context: string; cursor: number } | null => {
-    if (!originContextId) {
-      return null;
-    }
-
-    const originStack = contexts.get(originContextId);
-    if (!originStack || originStack.entries.length === 0) {
-      return null;
-    }
-
-    const originEntry = originStack.entries[originStack.cursor];
-    if (!originEntry) {
-      return null;
-    }
-
-    return {
-      context: originContextId,
-      cursor: originStack.cursor,
-    };
-  };
-
   const mapActionFromDirection = (direction: RouteDirection): RouteAction => {
     switch (direction) {
       case "back":
@@ -295,8 +265,6 @@ export const createContextHistory = () => {
 
     const entry = createNavEntry(targetContext, parsed, {
       originContext: isCrossContextPush ? previousActiveContext : null,
-      backBehavior: options?.backBehavior ?? null,
-      rootBackBehavior: options?.rootBackBehavior ?? null,
       routerAnimation: options?.routerAnimation,
     });
 
@@ -329,8 +297,6 @@ export const createContextHistory = () => {
     const replaced = activeStack.entries[activeStack.cursor];
     const entry = createNavEntry(activeContext, parsed, {
       originContext: replaced.originContext,
-      backBehavior: options?.backBehavior ?? replaced.backBehavior,
-      rootBackBehavior: options?.rootBackBehavior ?? replaced.rootBackBehavior,
       routerAnimation: options?.routerAnimation ?? replaced.routerAnimation,
     });
 
@@ -364,60 +330,22 @@ export const createContextHistory = () => {
     return stack.cursor + deep <= stack.entries.length - 1;
   };
 
+  /**
+   * Execute a back navigation within the active context.
+   *
+   * If cursor > 0, decrements the cursor and returns the target path.
+   * If cursor === 0, back is blocked and returns null.
+   *
+   * Never switches context. originContext is inert historical metadata.
+   */
   const performBack = (): string | null => {
     const stack = ensureContextStack(activeContext);
-    if (stack.entries.length === 0) {
+    if (stack.entries.length === 0 || stack.cursor <= 0) {
       return null;
     }
 
-    const entry = stack.entries[stack.cursor];
-    if (!entry) {
-      return null;
-    }
-
-    const effectiveBackBehavior = entry.backBehavior ?? stack.config.backBehavior;
-    const effectiveRootBackBehavior = entry.rootBackBehavior ?? stack.config.rootBackBehavior;
-
-    const trySwitchToOriginContext = (): string | null => {
-      const originContextId = entry.originContext;
-      if (!originContextId) {
-        return null;
-      }
-
-      const originStack = contexts.get(originContextId);
-      if (!originStack || originStack.entries.length === 0) {
-        return null;
-      }
-
-      const originEntry = originStack.entries[originStack.cursor];
-      if (!originEntry) {
-        return null;
-      }
-
-      activeContext = originContextId;
-      return entryToPath(originEntry);
-    };
-
-    if (stack.cursor > 0) {
-      if (effectiveBackBehavior === "previous-context") {
-        const originPathname = trySwitchToOriginContext();
-        if (originPathname) {
-          return originPathname;
-        }
-      }
-
-      stack.cursor -= 1;
-      return entryToPath(stack.entries[stack.cursor]);
-    }
-
-    if (effectiveRootBackBehavior === "previous-context") {
-      const originPathname = trySwitchToOriginContext();
-      if (originPathname) {
-        return originPathname;
-      }
-    }
-
-    return null;
+    stack.cursor -= 1;
+    return entryToPath(stack.entries[stack.cursor]);
   };
 
   const performForward = (): string | null => {
@@ -430,6 +358,15 @@ export const createContextHistory = () => {
     return entryToPath(stack.entries[stack.cursor]);
   };
 
+  /**
+   * Multi-step traversal within the active context.
+   *
+   * For negative deltas: replays performBack() up to abs(delta) times,
+   * stopping at the first null (blocked). If the first step blocks,
+   * returns null. Otherwise returns the final reached path.
+   *
+   * For positive deltas: advances cursor by delta (clamped to stack top).
+   */
   const go = (delta: number): string | null => {
     const normalizedDelta = Math.trunc(delta);
 
@@ -439,12 +376,8 @@ export const createContextHistory = () => {
 
     if (normalizedDelta < 0) {
       const steps = Math.abs(normalizedDelta);
-      const previousActiveContext = activeContext;
-      const previousCursors = new Map<string, number>();
-
-      for (const [id, stack] of contexts.entries()) {
-        previousCursors.set(id, stack.cursor);
-      }
+      const stack = ensureContextStack(activeContext);
+      const previousCursor = stack.cursor;
 
       let completedSteps = 0;
       let finalPathname: string | null = null;
@@ -453,19 +386,12 @@ export const createContextHistory = () => {
         const pathname = performBack();
         if (pathname === null) {
           if (completedSteps === 0) {
-            activeContext = previousActiveContext;
-            for (const [id, cursor] of previousCursors.entries()) {
-              const stack = contexts.get(id);
-              if (stack) {
-                stack.cursor = cursor;
-              }
-            }
-
+            // First step blocked -- restore cursor and cancel entirely
+            stack.cursor = previousCursor;
             return null;
           }
-
-          const entry = currentEntry();
-          return entry ? entryToPath(entry) : null;
+          // Partial completion -- stop at last successful position
+          return finalPathname;
         }
 
         completedSteps += 1;
@@ -497,8 +423,6 @@ export const createContextHistory = () => {
       const route = parseRouteInput(defaultHref);
       const synthesized = createNavEntry(tab, route, {
         originContext: null,
-        backBehavior: null,
-        rootBackBehavior: null,
         routerAnimation: undefined,
       });
 
@@ -524,8 +448,6 @@ export const createContextHistory = () => {
         targetStack.entries.push(
           createNavEntry(tab, route, {
             originContext: null,
-            backBehavior: null,
-            rootBackBehavior: null,
             routerAnimation: undefined,
           })
         );
@@ -556,8 +478,6 @@ export const createContextHistory = () => {
     const targetStack = ensureContextStack(targetContext);
     const entry = createNavEntry(targetContext, route, {
       originContext: null,
-      backBehavior: null,
-      rootBackBehavior: null,
       routerAnimation: undefined,
     });
 
@@ -614,39 +534,23 @@ export const createContextHistory = () => {
     }
   };
 
+  /**
+   * Derive the pushedByRoute value for CurrentRouteInfo production.
+   *
+   * Returns the pathname that back() would navigate to, or undefined if
+   * back is blocked. This controls swipe-back availability and the
+   * back button visibility (!!pushedByRoute === showGoBack).
+   *
+   * With previous-context removed, this is purely cursor-based:
+   * cursor > 0 → previous entry pathname, else undefined.
+   */
   const derivePushedByRoute = (): string | undefined => {
     const stack = ensureContextStack(activeContext);
-    if (stack.entries.length === 0) {
+    if (stack.entries.length === 0 || stack.cursor <= 0) {
       return undefined;
     }
 
-    const entry = stack.entries[stack.cursor];
-    if (!entry) {
-      return undefined;
-    }
-
-    const effectiveBackBehavior = entry.backBehavior ?? stack.config.backBehavior;
-    const effectiveRootBackBehavior = entry.rootBackBehavior ?? stack.config.rootBackBehavior;
-
-    if (stack.cursor > 0) {
-      if (effectiveBackBehavior === "previous-context") {
-        const originTarget = resolveOriginTarget(entry.originContext);
-        if (originTarget) {
-          return contexts.get(originTarget.context)?.entries[originTarget.cursor]?.pathname;
-        }
-      }
-
-      return stack.entries[stack.cursor - 1]?.pathname;
-    }
-
-    if (effectiveRootBackBehavior === "previous-context") {
-      const originTarget = resolveOriginTarget(entry.originContext);
-      if (originTarget) {
-        return contexts.get(originTarget.context)?.entries[originTarget.cursor]?.pathname;
-      }
-    }
-
-    return undefined;
+    return stack.entries[stack.cursor - 1]?.pathname;
   };
 
   const produceCurrentRouteInfo = (
@@ -756,34 +660,22 @@ export const createContextHistory = () => {
     ensureTabRegistration(tab, currentPathname);
   };
 
+  /**
+   * Produce a read-only snapshot of the complete navigational model state.
+   *
+   * Each entry's backTarget is purely cursor-based: cursor > 0 → previous
+   * entry in the same context, cursor === 0 → null (blocked).
+   */
   const snapshot = (): ContextHistorySnapshot => {
     const contextSnapshots: ContextHistorySnapshot["contexts"] = {};
 
     for (const [id, stack] of contexts.entries()) {
       contextSnapshots[id] = {
         cursor: stack.cursor,
-        entries: stack.entries.map((entry, cursor) => {
-          const effectiveBackBehavior = entry.backBehavior ?? stack.config.backBehavior;
-          const effectiveRootBackBehavior = entry.rootBackBehavior ?? stack.config.rootBackBehavior;
-
-          let backTarget: { context: string; cursor: number } | null = null;
-          if (cursor > 0) {
-            if (effectiveBackBehavior === "previous-context") {
-              backTarget = resolveOriginTarget(entry.originContext);
-            }
-
-            if (!backTarget) {
-              backTarget = { context: id, cursor: cursor - 1 };
-            }
-          } else if (effectiveRootBackBehavior === "previous-context") {
-            backTarget = resolveOriginTarget(entry.originContext);
-          }
-
-          return {
-            url: entryToPath(entry),
-            backTarget,
-          };
-        }),
+        entries: stack.entries.map((entry, index) => ({
+          url: entryToPath(entry),
+          backTarget: index > 0 ? { context: id, cursor: index - 1 } : null,
+        })),
       };
     }
 

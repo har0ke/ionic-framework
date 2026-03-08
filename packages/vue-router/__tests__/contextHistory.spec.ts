@@ -2,8 +2,6 @@ import { createContextHistory } from "../src/contextHistory";
 import type { ContextConfig } from "../src/types";
 
 const tabConfig: ContextConfig = {
-  backBehavior: "within-context",
-  rootBackBehavior: "block",
   clearOnExternalPush: false,
   unmatchedBehavior: "default",
 };
@@ -50,10 +48,7 @@ describe("Context History (registry + matching)", () => {
   it("re-registering the same id is a no-op", () => {
     const ctx = createContextHistory();
     ctx.registerContext("feed", "/tabs/feed", tabConfig);
-    ctx.registerContext("feed", "/other", {
-      ...tabConfig,
-      unmatchedBehavior: "active",
-    });
+    ctx.registerContext("feed", "/other", tabConfig);
 
     expect(ctx.matchContext("/tabs/feed")).toEqual("feed");
     expect(ctx.matchContext("/other")).toEqual("default");
@@ -117,28 +112,6 @@ describe("Context History (Chunk B stack operations)", () => {
     expect(ctx.currentEntry()?.routerAnimation).toBe(customAnimation);
   });
 
-  it("replace in same context inherits entry overrides unless explicitly overridden", () => {
-    const ctx = createContextHistory();
-    ctx.registerContext("feed", "/tabs/feed", tabConfig);
-
-    ctx.push("/tabs/feed/", {
-      backBehavior: "previous-context",
-      rootBackBehavior: "previous-context",
-    });
-    ctx.replace("/tabs/feed/updated/");
-
-    expect(ctx.currentEntry()?.backBehavior).toEqual("previous-context");
-    expect(ctx.currentEntry()?.rootBackBehavior).toEqual("previous-context");
-
-    ctx.replace("/tabs/feed/updated-again/", {
-      backBehavior: "within-context",
-      rootBackBehavior: "block",
-    });
-
-    expect(ctx.currentEntry()?.backBehavior).toEqual("within-context");
-    expect(ctx.currentEntry()?.rootBackBehavior).toEqual("block");
-  });
-
   it("replace cross-context behaves as push into target context", () => {
     const ctx = createContextHistory();
     ctx.registerContext("feed", "/tabs/feed", tabConfig);
@@ -190,90 +163,6 @@ describe("Context History (Chunk C navigation algorithms)", () => {
 
     expect(ctx.performBack()).toBeNull();
     expect(ctx.currentEntry()?.pathname).toBe("/tabs/feed/");
-  });
-
-  it("performBack switches to origin context for previous-context behavior", () => {
-    const ctx = createContextHistory();
-    ctx.registerContext("feed", "/tabs/feed", {
-      ...tabConfig,
-      backBehavior: "previous-context",
-      rootBackBehavior: "previous-context",
-    });
-
-    ctx.push("/home/");
-    ctx.push("/tabs/feed/first/");
-    ctx.push("/home/again/");
-    ctx.push("/tabs/feed/second/");
-
-    expect(ctx.performBack()).toBe("/home/again/");
-    expect(ctx.currentEntry()?.context).toBe("default");
-    expect(ctx.currentEntry()?.pathname).toBe("/home/again/");
-  });
-
-  it("previous-context with missing origin falls back to decrement or block", () => {
-    const ctx = createContextHistory();
-
-    ctx.push("/a/");
-    ctx.push("/b/", { backBehavior: "previous-context" });
-    ctx.replace("/b/", { backBehavior: "previous-context", rootBackBehavior: "previous-context" });
-
-    const nonRootEntry = ctx.currentEntry();
-    if (!nonRootEntry) {
-      throw new Error("Expected a current entry");
-    }
-    nonRootEntry.originContext = "ghost";
-
-    expect(ctx.performBack()).toBe("/a/");
-    expect(ctx.currentEntry()?.pathname).toBe("/a/");
-
-    const rootEntry = ctx.currentEntry();
-    if (!rootEntry) {
-      throw new Error("Expected a current entry");
-    }
-    rootEntry.rootBackBehavior = "previous-context";
-    rootEntry.originContext = "ghost";
-
-    expect(ctx.performBack()).toBeNull();
-    expect(ctx.currentEntry()?.pathname).toBe("/a/");
-  });
-
-  it("entry overrides take precedence over context back configuration", () => {
-    const ctx = createContextHistory();
-    ctx.registerContext("feed", "/tabs/feed", {
-      ...tabConfig,
-      backBehavior: "within-context",
-      rootBackBehavior: "block",
-    });
-
-    ctx.push("/d1/");
-    ctx.push("/tabs/feed/a/");
-    ctx.push("/d2/");
-    ctx.push("/tabs/feed/b/", { backBehavior: "previous-context" });
-
-    expect(ctx.performBack()).toBe("/d2/");
-    expect(ctx.currentEntry()?.context).toBe("default");
-    expect(ctx.currentEntry()?.pathname).toBe("/d2/");
-  });
-
-  it("left-behind context cursor is preserved after previous-context switch", () => {
-    const ctx = createContextHistory();
-    ctx.registerContext("feed", "/tabs/feed", {
-      ...tabConfig,
-      backBehavior: "previous-context",
-      rootBackBehavior: "previous-context",
-    });
-
-    ctx.push("/start/");
-    ctx.push("/tabs/feed/a/");
-    ctx.push("/start/2/", { backBehavior: "previous-context" });
-    ctx.push("/tabs/feed/b/");
-
-    expect(ctx.performBack()).toBe("/start/2/");
-    expect(ctx.currentEntry()?.context).toBe("default");
-
-    expect(ctx.performBack()).toBe("/tabs/feed/b/");
-    expect(ctx.currentEntry()?.context).toBe("feed");
-    expect(ctx.currentEntry()?.pathname).toBe("/tabs/feed/b/");
   });
 
   it("performForward advances once and returns null at top", () => {
@@ -437,7 +326,7 @@ describe("Context History (Chunk D tab/reset/snapshot/output)", () => {
     ]);
   });
 
-  it("derivePushedByRoute handles within-context, root-block, previous-context and origin cursor updates", () => {
+  it("derivePushedByRoute returns previous entry or undefined at root", () => {
     const ctx = createContextHistory();
     ctx.registerContext("feed", "/tabs/feed", tabConfig);
 
@@ -446,13 +335,10 @@ describe("Context History (Chunk D tab/reset/snapshot/output)", () => {
     expect(ctx.derivePushedByRoute()).toBe("/a/");
 
     ctx.push("/tabs/feed/");
+    // At tab root (cursor 0), back is blocked → undefined
     expect(ctx.derivePushedByRoute()).toBeUndefined();
 
     ctx.push("/tabs/feed/page2/");
-    ctx.push("/login/");
-    expect(ctx.derivePushedByRoute()).toBe("/tabs/feed/page2/");
-
-    ctx.resetTab("feed", "/tabs/feed/");
     expect(ctx.derivePushedByRoute()).toBe("/tabs/feed/");
   });
 
@@ -537,7 +423,8 @@ describe("Context History (Chunk D tab/reset/snapshot/output)", () => {
     expect(snap.contexts.feed.entries[0].url).toBe("/tabs/feed/");
     expect(snap.contexts.feed.entries[0].backTarget).toBeNull();
     expect(snap.contexts.feed.entries[1].backTarget).toEqual({ context: "feed", cursor: 0 });
+    // Default context entry at cursor 0: back is blocked (no previous-context)
     expect(snap.contexts.default.entries[0].url).toBe("/login/");
-    expect(snap.contexts.default.entries[0].backTarget).toEqual({ context: "feed", cursor: 1 });
+    expect(snap.contexts.default.entries[0].backTarget).toBeNull();
   });
 });
