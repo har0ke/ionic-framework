@@ -175,3 +175,175 @@ describe("Context History (Chunk B stack operations)", () => {
     expect(ctx.currentEntry()?.search).toBe("x=2");
   });
 });
+
+describe("Context History (Chunk C navigation algorithms)", () => {
+  it("performBack decrements within context and blocks at root when configured", () => {
+    const ctx = createContextHistory();
+    ctx.registerContext("feed", "/tabs/feed", tabConfig);
+
+    ctx.push("/login/");
+    ctx.push("/tabs/feed/");
+    ctx.push("/tabs/feed/details/");
+
+    expect(ctx.performBack()).toBe("/tabs/feed/");
+    expect(ctx.currentEntry()?.pathname).toBe("/tabs/feed/");
+
+    expect(ctx.performBack()).toBeNull();
+    expect(ctx.currentEntry()?.pathname).toBe("/tabs/feed/");
+  });
+
+  it("performBack switches to origin context for previous-context behavior", () => {
+    const ctx = createContextHistory();
+    ctx.registerContext("feed", "/tabs/feed", {
+      ...tabConfig,
+      backBehavior: "previous-context",
+      rootBackBehavior: "previous-context",
+    });
+
+    ctx.push("/home/");
+    ctx.push("/tabs/feed/first/");
+    ctx.push("/home/again/");
+    ctx.push("/tabs/feed/second/");
+
+    expect(ctx.performBack()).toBe("/home/again/");
+    expect(ctx.currentEntry()?.context).toBe("default");
+    expect(ctx.currentEntry()?.pathname).toBe("/home/again/");
+  });
+
+  it("previous-context with missing origin falls back to decrement or block", () => {
+    const ctx = createContextHistory();
+
+    ctx.push("/a/");
+    ctx.push("/b/", { backBehavior: "previous-context" });
+    ctx.replace("/b/", { backBehavior: "previous-context", rootBackBehavior: "previous-context" });
+
+    const nonRootEntry = ctx.currentEntry();
+    if (!nonRootEntry) {
+      throw new Error("Expected a current entry");
+    }
+    nonRootEntry.originContext = "ghost";
+
+    expect(ctx.performBack()).toBe("/a/");
+    expect(ctx.currentEntry()?.pathname).toBe("/a/");
+
+    const rootEntry = ctx.currentEntry();
+    if (!rootEntry) {
+      throw new Error("Expected a current entry");
+    }
+    rootEntry.rootBackBehavior = "previous-context";
+    rootEntry.originContext = "ghost";
+
+    expect(ctx.performBack()).toBeNull();
+    expect(ctx.currentEntry()?.pathname).toBe("/a/");
+  });
+
+  it("entry overrides take precedence over context back configuration", () => {
+    const ctx = createContextHistory();
+    ctx.registerContext("feed", "/tabs/feed", {
+      ...tabConfig,
+      backBehavior: "within-context",
+      rootBackBehavior: "block",
+    });
+
+    ctx.push("/d1/");
+    ctx.push("/tabs/feed/a/");
+    ctx.push("/d2/");
+    ctx.push("/tabs/feed/b/", { backBehavior: "previous-context" });
+
+    expect(ctx.performBack()).toBe("/d2/");
+    expect(ctx.currentEntry()?.context).toBe("default");
+    expect(ctx.currentEntry()?.pathname).toBe("/d2/");
+  });
+
+  it("left-behind context cursor is preserved after previous-context switch", () => {
+    const ctx = createContextHistory();
+    ctx.registerContext("feed", "/tabs/feed", {
+      ...tabConfig,
+      backBehavior: "previous-context",
+      rootBackBehavior: "previous-context",
+    });
+
+    ctx.push("/start/");
+    ctx.push("/tabs/feed/a/");
+    ctx.push("/start/2/", { backBehavior: "previous-context" });
+    ctx.push("/tabs/feed/b/");
+
+    expect(ctx.performBack()).toBe("/start/2/");
+    expect(ctx.currentEntry()?.context).toBe("default");
+
+    expect(ctx.performBack()).toBe("/tabs/feed/b/");
+    expect(ctx.currentEntry()?.context).toBe("feed");
+    expect(ctx.currentEntry()?.pathname).toBe("/tabs/feed/b/");
+  });
+
+  it("performForward advances once and returns null at top", () => {
+    const ctx = createContextHistory();
+
+    ctx.push("/a/");
+    ctx.push("/b/");
+    ctx.push("/c/");
+
+    ctx.performBack();
+    expect(ctx.currentEntry()?.pathname).toBe("/b/");
+
+    expect(ctx.performForward()).toBe("/c/");
+    expect(ctx.performForward()).toBeNull();
+  });
+
+  it("performBack and performForward preserve query parameters in returned paths", () => {
+    const ctx = createContextHistory();
+
+    ctx.push("/a/?q=1");
+    ctx.push("/b/?q=2");
+
+    expect(ctx.performBack()).toBe("/a/?q=1");
+    expect(ctx.performForward()).toBe("/b/?q=2");
+  });
+
+  it("go(-1) and go(-N) move back with partial completion semantics", () => {
+    const ctx = createContextHistory();
+    ctx.registerContext("feed", "/tabs/feed", tabConfig);
+
+    ctx.push("/tabs/feed/");
+    ctx.push("/tabs/feed/one/");
+    ctx.push("/tabs/feed/two/");
+
+    expect(ctx.go(-1)).toBe("/tabs/feed/one/");
+    expect(ctx.go(-5)).toBe("/tabs/feed/");
+    expect(ctx.currentEntry()?.pathname).toBe("/tabs/feed/");
+  });
+
+  it("go(-N) returns null with no mutation when first step is blocked", () => {
+    const ctx = createContextHistory();
+    ctx.registerContext("feed", "/tabs/feed", tabConfig);
+
+    ctx.push("/login/");
+    ctx.push("/tabs/feed/");
+
+    expect(ctx.go(-1)).toBeNull();
+    expect(ctx.currentEntry()?.pathname).toBe("/tabs/feed/");
+  });
+
+  it("go(+N) clamps to top and returns null when no movement", () => {
+    const ctx = createContextHistory();
+
+    ctx.push("/a/");
+    ctx.push("/b/");
+    ctx.push("/c/");
+
+    expect(ctx.go(-2)).toBe("/a/");
+    expect(ctx.go(10)).toBe("/c/");
+    expect(ctx.go(1)).toBeNull();
+  });
+
+  it("go returns full path including query parameters", () => {
+    const ctx = createContextHistory();
+
+    ctx.push("/a/?q=1");
+    ctx.push("/b/?q=2");
+    ctx.push("/c/?q=3");
+
+    expect(ctx.go(-2)).toBe("/a/?q=1");
+    expect(ctx.go(1)).toBe("/b/?q=2");
+  });
+});

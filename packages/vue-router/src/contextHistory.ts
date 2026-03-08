@@ -208,6 +208,8 @@ export const createContextHistory = () => {
     return stack.entries[stack.cursor];
   };
 
+  const entryToPath = (entry: NavEntry): string => (entry.search ? `${entry.pathname}?${entry.search}` : entry.pathname);
+
   const push = (
     route: RouteInput,
     options?: PushOptions,
@@ -303,11 +305,139 @@ export const createContextHistory = () => {
     return stack.cursor + deep <= stack.entries.length - 1;
   };
 
+  const performBack = (): string | null => {
+    const stack = ensureContextStack(activeContext);
+    if (stack.entries.length === 0) {
+      return null;
+    }
+
+    const entry = stack.entries[stack.cursor];
+    if (!entry) {
+      return null;
+    }
+
+    const effectiveBackBehavior = entry.backBehavior ?? stack.config.backBehavior;
+    const effectiveRootBackBehavior = entry.rootBackBehavior ?? stack.config.rootBackBehavior;
+
+    const trySwitchToOriginContext = (): string | null => {
+      const originContextId = entry.originContext;
+      if (!originContextId) {
+        return null;
+      }
+
+      const originStack = contexts.get(originContextId);
+      if (!originStack || originStack.entries.length === 0) {
+        return null;
+      }
+
+      const originEntry = originStack.entries[originStack.cursor];
+      if (!originEntry) {
+        return null;
+      }
+
+      activeContext = originContextId;
+      return entryToPath(originEntry);
+    };
+
+    if (stack.cursor > 0) {
+      if (effectiveBackBehavior === "previous-context") {
+        const originPathname = trySwitchToOriginContext();
+        if (originPathname) {
+          return originPathname;
+        }
+      }
+
+      stack.cursor -= 1;
+      return entryToPath(stack.entries[stack.cursor]);
+    }
+
+    if (effectiveRootBackBehavior === "previous-context") {
+      const originPathname = trySwitchToOriginContext();
+      if (originPathname) {
+        return originPathname;
+      }
+    }
+
+    return null;
+  };
+
+  const performForward = (): string | null => {
+    const stack = ensureContextStack(activeContext);
+    if (stack.entries.length === 0 || stack.cursor >= stack.entries.length - 1) {
+      return null;
+    }
+
+    stack.cursor += 1;
+    return entryToPath(stack.entries[stack.cursor]);
+  };
+
+  const go = (delta: number): string | null => {
+    const normalizedDelta = Math.trunc(delta);
+
+    if (normalizedDelta === 0) {
+      return null;
+    }
+
+    if (normalizedDelta < 0) {
+      const steps = Math.abs(normalizedDelta);
+      const previousActiveContext = activeContext;
+      const previousCursors = new Map<string, number>();
+
+      for (const [id, stack] of contexts.entries()) {
+        previousCursors.set(id, stack.cursor);
+      }
+
+      let completedSteps = 0;
+      let finalPathname: string | null = null;
+
+      for (let i = 0; i < steps; i += 1) {
+        const pathname = performBack();
+        if (pathname === null) {
+          if (completedSteps === 0) {
+            activeContext = previousActiveContext;
+            for (const [id, cursor] of previousCursors.entries()) {
+              const stack = contexts.get(id);
+              if (stack) {
+                stack.cursor = cursor;
+              }
+            }
+
+            return null;
+          }
+
+          const entry = currentEntry();
+          return entry ? entryToPath(entry) : null;
+        }
+
+        completedSteps += 1;
+        finalPathname = pathname;
+      }
+
+      return finalPathname;
+    }
+
+    const stack = ensureContextStack(activeContext);
+    if (stack.entries.length === 0) {
+      return null;
+    }
+
+    const targetCursor = Math.min(stack.cursor + normalizedDelta, stack.entries.length - 1);
+    if (targetCursor === stack.cursor) {
+      return null;
+    }
+
+    stack.cursor = targetCursor;
+    return entryToPath(stack.entries[stack.cursor]);
+  };
+
   return {
     registerContext,
     matchContext,
     push,
     replace,
+    performBack,
+    performForward,
+    go,
     currentEntry,
     canGoBack,
     canGoForward,
