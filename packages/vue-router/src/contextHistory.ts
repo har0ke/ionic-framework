@@ -9,8 +9,6 @@ import type {
   PushOptions,
   RouteAction,
   RouteDirection,
-  SavedEntries,
-  StateSnapshot,
 } from "./types";
 
 const DEFAULT_CONTEXT_ID = "default" as const;
@@ -223,11 +221,6 @@ export const createContextHistory = () => {
         return "push";
     }
   };
-
-  const cloneEntry = (entry: NavEntry): NavEntry => ({
-    ...entry,
-    params: entry.params ? { ...entry.params } : undefined,
-  });
 
   const push = (
     route: RouteInput,
@@ -544,22 +537,6 @@ export const createContextHistory = () => {
     return entryToPath(entry);
   };
 
-  const captureState = (savedEntries?: SavedEntries[]): StateSnapshot => {
-    const cursors: StateSnapshot["cursors"] = {};
-    for (const [id, stack] of contexts.entries()) {
-      cursors[id] = stack.cursor;
-    }
-
-    return {
-      activeContext,
-      cursors,
-      savedEntries: savedEntries?.map((saved) => ({
-        context: saved.context,
-        entries: saved.entries.map(cloneEntry),
-      })),
-    };
-  };
-
   const getRetainedPathnames = (): Set<string> => {
     const retainedPathnames = new Set<string>();
 
@@ -574,20 +551,6 @@ export const createContextHistory = () => {
     }
 
     return retainedPathnames;
-  };
-
-  const restoreState = (snapshot: StateSnapshot): void => {
-    activeContext = snapshot.activeContext;
-
-    for (const [id, cursor] of Object.entries(snapshot.cursors)) {
-      const stack = ensureContextStack(id);
-      stack.cursor = cursor;
-    }
-
-    for (const saved of snapshot.savedEntries ?? []) {
-      const stack = ensureContextStack(saved.context);
-      stack.entries.push(...saved.entries.map(cloneEntry));
-    }
   };
 
   /**
@@ -1130,9 +1093,7 @@ export const createContextHistory = () => {
     changeTab,
     resetTab,
     resetAll,
-    captureState,
     getRetainedPathnames,
-    restoreState,
     derivePushedByRoute,
     produceCurrentRouteInfo,
     handleSetCurrentTab,

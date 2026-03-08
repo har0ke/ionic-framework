@@ -385,27 +385,6 @@ describe("Context History (Chunk D tab/reset/snapshot/output)", () => {
     expect(ctx.canGoBack(1)).toBe(false);
   });
 
-  it("captureState and restoreState restore active context/cursors and savedEntries", () => {
-    const ctx = createContextHistory();
-    const a = ctx.push("/a/");
-    const b = ctx.push("/b/");
-    const c = ctx.push("/c/");
-
-    expect(ctx.go(-2)).toBe("/a/");
-
-    const snapshot = ctx.captureState([{ context: "default", entries: [b, c] }]);
-
-    ctx.resetTab("default", "/a/");
-    expect(ctx.canGoForward(1)).toBe(false);
-
-    ctx.restoreState(snapshot);
-    expect(ctx.currentEntry()?.pathname).toBe("/a/");
-    expect(ctx.performForward()).toBe("/b/");
-    expect(ctx.performForward()).toBe("/c/");
-
-    expect(a.pathname).toBe("/a/");
-  });
-
   it("getRetainedPathnames returns entries up to cursor across all contexts", () => {
     const ctx = createContextHistory();
     ctx.registerContext("feed", "/tabs/feed", tabConfig);

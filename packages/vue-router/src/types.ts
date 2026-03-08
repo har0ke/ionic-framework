@@ -138,22 +138,9 @@ export interface ContextStack {
   rootHref: string | undefined;
 }
 
-export interface SavedEntries {
-  context: string;
-  entries: NavEntry[];
-}
-
-// Placeholder for now; may evolve as rewrite lands.
-export interface StateSnapshot {
-  activeContext: string;
-  cursors: { [contextId: string]: number };
-  savedEntries?: SavedEntries[];
-}
-
 export interface NavigationContext {
   animation?: AnimationBuilder;
   direction?: RouteDirection;
-  snapshot?: StateSnapshot;
 }
 
 // Placeholder for now; kept separate from legacy RouteInfo.
