@@ -255,6 +255,16 @@ describe("createIonRouter integration", () => {
     expect(h.nav.canGoBack()).toBe(false);
   });
 
+  it("produces initial route info even when the first confirmed route matches the current URL", () => {
+    const h = createRouterHarness("/");
+
+    h.commitNavigation("/");
+
+    expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/");
+    expect(h.nav.getCurrentRouteInfo()?.routerAction).toBe("push");
+    expect(h.nav.getCurrentRouteInfo()?.routerDirection).toBe("forward");
+  });
+
   it("exposes current/leaving/canGoBack and tab registration snapshot", () => {
     const h = createRouterHarness("/");
 

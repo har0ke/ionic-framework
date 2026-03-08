@@ -33,6 +33,16 @@ const toComparablePath = (route: RouteLocationNormalized): string => {
   return search ? `${route.path}?${search}` : route.path;
 };
 
+const routeInfoToComparablePath = (routeInfo?: RouteInfo): string | undefined => {
+  if (!routeInfo?.pathname) {
+    return undefined;
+  }
+
+  return routeInfo.search
+    ? `${routeInfo.pathname}?${routeInfo.search}`
+    : routeInfo.pathname;
+};
+
 export const createIonRouter = (
   opts: IonicVueRouterOptions,
   router: Router
@@ -151,13 +161,15 @@ export const createIonRouter = (
       browserInterceptionInFlight = false;
 
       const navContext = readAndClearPending();
+      const leaving = currentRouteInfo;
 
-      if (toComparablePath(to) === toComparablePath(from)) {
+      if (
+        leaving !== undefined &&
+        routeInfoToComparablePath(leaving) === toComparablePath(to)
+      ) {
         notifyHistoryChange();
         return;
       }
-
-      const leaving = currentRouteInfo;
 
       if (navContext?.snapshot) {
         const entering = contextHistory.currentEntry();
