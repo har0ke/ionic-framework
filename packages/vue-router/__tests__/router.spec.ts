@@ -317,7 +317,7 @@ describe("createIonRouter integration", () => {
     expect(h.nav.canGoForward()).toBe(true);
   });
 
-  it("aborted plan has no effect; cancelled plan is kept for successor", () => {
+  it("aborted plan has no effect on context history state", () => {
     const h = createRouterHarness("/");
 
     h.nav.handleNavigate("/a", "push", "forward");
@@ -325,27 +325,24 @@ describe("createIonRouter integration", () => {
     h.nav.handleNavigate("/b", "push", "forward");
     h.commitNavigation("/b");
 
+    // goBack prepares a plan but does not mutate context history.
+    // When the navigation is aborted, the plan is discarded.
     h.nav.goBack();
     expect(h.router.replace).toHaveBeenLastCalledWith("/a");
     h.runAfterEachOnly("/a", "/b", NavigationFailureType.aborted);
 
+    // State unchanged: still at /b, no forward entries.
     expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/b");
     expect(h.nav.canGoForward()).toBe(false);
 
-    h.nav.handleNavigate("/c", "push", "forward");
-    h.commitNavigation("/c");
-
+    // Subsequent navigation works normally after the abort.
     h.nav.goBack();
-    h.nav.goBack();
-    expect(h.router.replace).toHaveBeenNthCalledWith(2, "/b");
-    expect(h.router.replace).toHaveBeenNthCalledWith(3, "/a");
-
-    h.runAfterEachOnly("/b", "/c", NavigationFailureType.cancelled);
-    h.runAfterEachOnly("/a", "/b");
+    expect(h.router.replace).toHaveBeenLastCalledWith("/a");
+    h.commitNavigation("/a", { replaced: true });
 
     expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/a");
     expect(h.nav.getCurrentRouteInfo()?.routerDirection).toBe("back");
-    expect(h.nav.canGoForward(2)).toBe(true);
+    expect(h.nav.canGoForward()).toBe(true);
   });
 
   it("skips same-URL mutation but still notifies listeners", () => {

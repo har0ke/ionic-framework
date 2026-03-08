@@ -104,45 +104,6 @@ export const createIonRouter = (
   };
 
   /**
-   * If a prepared plan is already pending (from a previous navigation that
-   * hasn't been confirmed by afterEach yet), speculatively commit it so that
-   * subsequent prepare calls see the mutated state.
-   *
-   * This handles rapid-fire navigations (e.g. goBack() called twice before
-   * the first afterEach fires). The speculative commit uses the plan's own
-   * target as the resolved payload since the actual resolved route isn't
-   * available yet.
-   */
-  const speculativelyCommitPending = (): void => {
-    if (pendingPlan === null) {
-      return;
-    }
-
-    const { plan } = pendingPlan;
-    const [pathname, query = ""] = plan.target.split("?", 2);
-    plan.commit({ pathname, search: query });
-
-    // Produce route info from the speculative commit so currentRouteInfo
-    // stays consistent.
-    const entering = contextHistory.currentEntry();
-    if (entering) {
-      const leaving = currentRouteInfo;
-      currentRouteInfo = contextHistory.produceCurrentRouteInfo(
-        entering,
-        leaving,
-        {
-          direction: plan.direction,
-          action: plan.action,
-          animation: pendingPlan.animation ?? plan.animation,
-        }
-      );
-      leavingRouteInfo = leaving;
-    }
-
-    pendingPlan = null;
-  };
-
-  /**
    * Execute a prepared plan: store it as pending and dispatch the router call.
    */
   const executePlan = (plan: PreparedPlan, animation?: AnimationBuilder): void => {
@@ -156,7 +117,6 @@ export const createIonRouter = (
   };
 
   const go = (delta: number, routerAnimation?: AnimationBuilder) => {
-    speculativelyCommitPending();
     const plan = contextHistory.prepareGo(delta);
     if (plan === null) {
       return;
@@ -166,7 +126,6 @@ export const createIonRouter = (
   };
 
   const goBack = (routerAnimation?: AnimationBuilder) => {
-    speculativelyCommitPending();
     const plan = contextHistory.prepareBack();
     if (plan === null) {
       return;
@@ -176,7 +135,6 @@ export const createIonRouter = (
   };
 
   const goForward = (routerAnimation?: AnimationBuilder) => {
-    speculativelyCommitPending();
     const plan = contextHistory.prepareForward();
     if (plan === null) {
       return;
@@ -342,7 +300,6 @@ export const createIonRouter = (
     defaultHref?: string,
     routerAnimation?: AnimationBuilder
   ) => {
-    speculativelyCommitPending();
     const plan = contextHistory.prepareBack(defaultHref, routerAnimation);
 
     if (plan !== null) {
@@ -361,7 +318,6 @@ export const createIonRouter = (
     routerAnimation?: AnimationBuilder,
     _tab?: string
   ) => {
-    speculativelyCommitPending();
     pendingHint = {
       direction: routerDirection,
       animation: routerAnimation,
@@ -391,13 +347,11 @@ export const createIonRouter = (
       return;
     }
 
-    speculativelyCommitPending();
     const plan = contextHistory.prepareChangeTab(tab, path);
     executePlan(plan);
   };
 
   const resetTab = (tab: string, defaultHref?: string) => {
-    speculativelyCommitPending();
     const plan = contextHistory.prepareResetTab(tab, defaultHref);
     if (plan === null) {
       return;
@@ -407,7 +361,6 @@ export const createIonRouter = (
   };
 
   const resetAll = (redirectTo: string) => {
-    speculativelyCommitPending();
     const plan = contextHistory.prepareResetAll(redirectTo);
     executePlan(plan);
   };
