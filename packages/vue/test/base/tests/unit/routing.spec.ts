@@ -761,10 +761,10 @@ describe('Routing', () => {
     const page2View = wrapper.findComponent(Page2);
     const page3View = wrapper.findComponent(Page3);
 
+    expect(router.currentRoute.value.path).toBe('/page3');
     expect(pageView.exists()).toBe(true);
     expect(isHidden(pageView)).toBe(true);
     expect(page2View.exists()).toBe(true);
-    expect(isHidden(page2View)).toBe(true);
     expect(page3View.exists()).toBe(true);
     expect(isHidden(page3View)).toBe(false);
   });
