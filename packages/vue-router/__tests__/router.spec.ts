@@ -251,6 +251,25 @@ describe("createIonRouter integration", () => {
     }
   });
 
+  it("exposes retained pathnames from context history", () => {
+    const h = createRouterHarness("/");
+
+    h.nav.handleNavigate("/a", "push", "forward");
+    h.commitNavigation("/a");
+    h.nav.handleNavigate("/b", "push", "forward");
+    h.commitNavigation("/b");
+    h.nav.handleNavigate("/c", "push", "forward");
+    h.commitNavigation("/c");
+
+    h.nav.goBack();
+    h.commitNavigation("/b", { replaced: true });
+
+    expect(Array.from(h.nav.getRetainedPathnames()).sort()).toEqual([
+      "/a",
+      "/b",
+    ]);
+  });
+
   it("warns once per overridden traversal method", () => {
     const h = createRouterHarness("/");
     const warn = jest.spyOn(console, "warn").mockImplementation(() => {});

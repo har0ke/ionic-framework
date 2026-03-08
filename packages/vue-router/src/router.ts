@@ -373,6 +373,8 @@ export const createIonRouter = (
 
   const getContextSnapshot = () => contextHistory.snapshot();
 
+  const getRetainedPathnames = () => contextHistory.getRetainedPathnames();
+
   if (typeof document !== "undefined") {
     document.addEventListener("ionBackButton", (ev: Event) => {
       (ev as any).detail.register(0, (processNextHandler: () => void) => {
@@ -398,5 +400,6 @@ export const createIonRouter = (
     goBack,
     goForward,
     getContextSnapshot,
+    getRetainedPathnames,
   };
 };

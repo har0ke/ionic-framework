@@ -104,34 +104,6 @@ describe('View Stacks', () => {
     expect(viewItemsAgain).toEqual(undefined);
   });
 
-  it('should unmount orphaned views', () => {
-    const itemA = createRegisteredViewItem(viewStacks, 1, '/home/1', true);
-    const itemB = createRegisteredViewItem(viewStacks, 1, '/home/2', true);
-    const itemC = createRegisteredViewItem(viewStacks, 1, '/home/3', true);
-    const itemD = createRegisteredViewItem(viewStacks, 1, '/home/4', true);
-
-    viewStacks.unmountLeavingViews(1, itemA, -3);
-
-    expect(itemB.mount).toEqual(false);
-    expect(itemB.ionPageElement).toEqual(undefined);
-    expect(itemB.ionRoute).toEqual(false);
-
-    expect(itemC.mount).toEqual(false);
-    expect(itemC.ionPageElement).toEqual(undefined);
-    expect(itemC.ionRoute).toEqual(false);
-  });
-
-  it('should remount intermediary views', () => {
-    const itemA = createRegisteredViewItem(viewStacks);
-    const itemB = createRegisteredViewItem(viewStacks);
-    const itemC = createRegisteredViewItem(viewStacks);
-    const itemD = createRegisteredViewItem(viewStacks);
-
-    viewStacks.mountIntermediaryViews(1, itemA, 3);
-
-    expect(itemB.mount).toEqual(true);
-    expect(itemC.mount).toEqual(true);
-  });
 })
 
 const createRegisteredViewItem = (viewStacks, outletId = '1', route = `/home/${counter++}`, mount = false) => {

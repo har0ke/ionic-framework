@@ -265,14 +265,29 @@ export const IonRouterOutlet = /*@__PURE__*/ defineComponent({
       return result;
     };
 
+    const reconcileMountedViews = () => {
+      const retainedPathnames: Set<string> = ionRouter.getRetainedPathnames();
+      const viewStack = viewStacks.getViewStack(id) ?? [];
+
+      viewStack.forEach((viewItem: any) => {
+        if (retainedPathnames.has(viewItem.pathname)) {
+          viewItem.mount = true;
+          return;
+        }
+
+        viewItem.mount = false;
+        viewItem.ionPageElement = undefined;
+        viewItem.ionRoute = false;
+        viewItem.matchedRoute.instances = {};
+      });
+    };
+
     const handlePageTransition = async () => {
       const routeInfo = ionRouter.getCurrentRouteInfo();
       const {
         routerDirection,
-        routerAction,
         routerAnimation,
         prevRouteLastPathname,
-        delta,
       } = routeInfo;
 
       const enteringViewItem = viewStacks.findViewItemByRouteInfo(
@@ -380,38 +395,6 @@ See https://ionicframework.com/docs/vue/navigation#ionpage for more information.
         leavingEl.classList.add("ion-page-hidden");
         leavingEl.setAttribute("aria-hidden", "true");
 
-        const usingLinearNavigation = viewStacks.size() === 1;
-
-        if (routerAction === "replace") {
-          leavingViewItem.mount = false;
-          leavingViewItem.ionPageElement = undefined;
-          leavingViewItem.ionRoute = false;
-        } else if (
-          !(routerAction === "push" && routerDirection === "forward")
-        ) {
-          const shouldLeavingViewBeRemoved =
-            routerDirection !== "none" &&
-            leavingViewItem &&
-            enteringViewItem !== leavingViewItem;
-          if (shouldLeavingViewBeRemoved) {
-            leavingViewItem.mount = false;
-            leavingViewItem.ionPageElement = undefined;
-            leavingViewItem.ionRoute = false;
-
-            /**
-             * router.go() expects navigation to be
-             * linear. If an app is using multiple stacks then
-             * it is not using linear navigation. As a result, router.go()
-             * will not give the results that developers are expecting.
-             */
-            if (usingLinearNavigation) {
-              viewStacks.unmountLeavingViews(id, enteringViewItem, delta);
-            }
-          }
-        } else if (usingLinearNavigation) {
-          viewStacks.mountIntermediaryViews(id, leavingViewItem, delta);
-        }
-
         fireLifecycle(
           leavingViewItem.vueComponent,
           leavingViewItem.vueComponentRef,
@@ -428,6 +411,8 @@ See https://ionicframework.com/docs/vue/navigation#ionpage for more information.
           enteringEl.classList.remove("ion-page-invisible")
         );
       }
+
+      reconcileMountedViews();
 
       fireLifecycle(
         enteringViewItem.vueComponent,

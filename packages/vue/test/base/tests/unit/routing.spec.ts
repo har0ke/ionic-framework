@@ -23,6 +23,10 @@ const BasePage = {
 }
 
 describe('Routing', () => {
+  const isHidden = (componentWrapper: ReturnType<typeof mount>) => {
+    return componentWrapper.element.classList.contains('ion-page-hidden') || componentWrapper.attributes('aria-hidden') === 'true';
+  };
+
   it('should pass no props', async () => {
     const Page1 = {
       ...BasePage,
@@ -261,15 +265,27 @@ describe('Routing', () => {
     router.replace('/parent')
     await waitForRouter();
 
-    expect(wrapper.findComponent(Parent).exists()).toBe(true);
-    expect(wrapper.findComponent(Tabs).exists()).toBe(false);
+    const parentView = wrapper.findComponent(Parent);
+    const tabsView = wrapper.findComponent(Tabs);
+
+    expect(parentView.exists()).toBe(true);
+    expect(isHidden(parentView)).toBe(false);
+    expect(tabsView.exists()).toBe(true);
+    expect(isHidden(tabsView)).toBe(true);
 
     router.replace('/tabs/tab1');
     await waitForRouter();
 
-    expect(wrapper.findComponent(Parent).exists()).toBe(false);
-    expect(wrapper.findComponent(Tab1).exists()).toBe(true);
-    expect(wrapper.findComponent(Tab2).exists()).toBe(false);
+    const parentViewAgain = wrapper.findComponent(Parent);
+    const tab1View = wrapper.findComponent(Tab1);
+    const tab2View = wrapper.findComponent(Tab2);
+
+    expect(parentViewAgain.exists()).toBe(true);
+    expect(isHidden(parentViewAgain)).toBe(true);
+    expect(tab1View.exists()).toBe(true);
+    expect(isHidden(tab1View)).toBe(false);
+    expect(tab2View.exists()).toBe(true);
+    expect(isHidden(tab2View)).toBe(true);
   });
 
   // Verifies fix for https://github.com/ionic-team/ionic-framework/issues/23043

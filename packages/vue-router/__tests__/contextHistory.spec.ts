@@ -419,6 +419,24 @@ describe("Context History (Chunk D tab/reset/snapshot/output)", () => {
     expect(a.pathname).toBe("/a/");
   });
 
+  it("getRetainedPathnames returns entries up to cursor across all contexts", () => {
+    const ctx = createContextHistory();
+    ctx.registerContext("feed", "/tabs/feed", tabConfig);
+
+    ctx.push("/tabs/feed/");
+    ctx.push("/tabs/feed/page2/");
+    ctx.push("/login/");
+    ctx.push("/signup/");
+
+    expect(ctx.go(-1)).toBe("/login/");
+
+    expect(Array.from(ctx.getRetainedPathnames()).sort()).toEqual([
+      "/login/",
+      "/tabs/feed/",
+      "/tabs/feed/page2/",
+    ]);
+  });
+
   it("derivePushedByRoute handles within-context, root-block, previous-context and origin cursor updates", () => {
     const ctx = createContextHistory();
     ctx.registerContext("feed", "/tabs/feed", tabConfig);

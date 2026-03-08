@@ -584,6 +584,22 @@ export const createContextHistory = () => {
     };
   };
 
+  const getRetainedPathnames = (): Set<string> => {
+    const retainedPathnames = new Set<string>();
+
+    for (const stack of contexts.values()) {
+      if (stack.entries.length === 0) {
+        continue;
+      }
+
+      for (let i = 0; i <= stack.cursor && i < stack.entries.length; i += 1) {
+        retainedPathnames.add(stack.entries[i].pathname);
+      }
+    }
+
+    return retainedPathnames;
+  };
+
   const restoreState = (snapshot: StateSnapshot): void => {
     activeContext = snapshot.activeContext;
 
@@ -786,6 +802,7 @@ export const createContextHistory = () => {
     resetTab,
     resetAll,
     captureState,
+    getRetainedPathnames,
     restoreState,
     derivePushedByRoute,
     produceCurrentRouteInfo,
