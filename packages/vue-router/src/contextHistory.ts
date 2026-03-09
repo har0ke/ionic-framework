@@ -42,8 +42,20 @@ type RouteInput = string | (RouteMetadata & { pathname: string });
 export const createContextHistory = () => {
   const registrations = new Map<string, ContextRegistration>();
   const contexts = new Map<string, ContextStack>();
-  let activeContext = DEFAULT_CONTEXT_ID;
+  let activeContext: string = DEFAULT_CONTEXT_ID;
   let nextEntryId = 1;
+
+  // Monotonic generation counter for commit staleness protection.
+  // Each prepare*() call increments prepareGeneration and captures it.
+  // A commit() is blocked if:
+  //   (a) gen < prepareGeneration — a newer plan was prepared since this
+  //       one, making this plan stale (e.g. p1=prepare, p2=prepare, p1.commit)
+  //   (b) gen <= lastCommittedGeneration — this plan was already committed
+  //       (or a newer one was), preventing double-commit.
+  // Both checks together handle: stale commit, double commit, and
+  // out-of-order commit.
+  let prepareGeneration = 0;
+  let lastCommittedGeneration = 0;
 
   // The default context always exists.
   registrations.set(DEFAULT_CONTEXT_ID, {
@@ -151,13 +163,34 @@ export const createContextHistory = () => {
     }
   };
 
+  /**
+   * Register a named navigation context with a URL prefix for route matching.
+   *
+   * Once registered, routes whose pathname matches this prefix (longest
+   * prefix wins) will be assigned to this context's stack. Registration
+   * is idempotent — calling with the same `id` twice is a no-op.
+   *
+   * @param id     - Unique context identifier (e.g. "feed")
+   * @param prefix - URL prefix for route matching (e.g. "/tabs/feed").
+   *   Must not be "/" or "" — those would match every route.
+   * @param config - Context-specific configuration (e.g. clearOnExternalPush)
+   * @throws If prefix is "/" or ""
+   */
   const registerContext = (id: string, prefix: string, config: ContextConfig): void => {
     if (registrations.has(id)) {
       return;
     }
 
+    const normalized = normalizePrefix(prefix);
+    if (normalized === "/" || normalized === "") {
+      throw new Error(
+        `Invalid context prefix "${prefix}": would match every route. ` +
+        `Use a more specific prefix like "/tabs/feed".`
+      );
+    }
+
     registrations.set(id, {
-      prefix: normalizePrefix(prefix),
+      prefix: normalized,
       config,
     });
 
@@ -198,6 +231,10 @@ export const createContextHistory = () => {
     return bestMatchId ?? DEFAULT_CONTEXT_ID;
   };
 
+  /**
+   * Return the navigation entry at the active context's current cursor,
+   * or undefined if the active context has no entries.
+   */
   const currentEntry = (): NavEntry | undefined => {
     const stack = ensureContextStack(activeContext);
     if (stack.entries.length === 0) {
@@ -207,6 +244,7 @@ export const createContextHistory = () => {
     return stack.entries[stack.cursor];
   };
 
+  /** Build a full path string (pathname + optional query) from a NavEntry. */
   const entryToPath = (entry: NavEntry): string => (entry.search ? `${entry.pathname}?${entry.search}` : entry.pathname);
 
   const mapActionFromDirection = (direction: RouteDirection): RouteAction => {
@@ -222,6 +260,20 @@ export const createContextHistory = () => {
     }
   };
 
+  /**
+   * Push a new navigation entry onto the matched context's stack.
+   *
+   * The target context is determined by longest-prefix match against the
+   * route's pathname. If this is a cross-context push, the target context's
+   * existing entries may be cleared (depending on `clearOnExternalPush`).
+   * Forward entries beyond the cursor are always truncated before pushing.
+   *
+   * @param route    - URL string (e.g. "/tabs/feed/page2?q=1") or object
+   * @param options  - Push options (routerAnimation, clearOnExternalPush override)
+   * @param metadata - Additional route metadata (search, params) when
+   *   route is a string and metadata comes from a separate source
+   * @returns The created NavEntry
+   */
   const push = (
     route: RouteInput,
     options?: PushOptions,
@@ -256,6 +308,19 @@ export const createContextHistory = () => {
     return entry;
   };
 
+  /**
+   * Replace the entry at the active context's cursor with a new entry.
+   *
+   * If the route resolves to a different context than the active one,
+   * delegates to `push` (there is no "current entry" in the target context
+   * to replace — the metadata is preserved through the parsed route object).
+   * Also delegates to `push` if the active stack is empty.
+   *
+   * @param route    - URL string or route object
+   * @param options  - Push options (routerAnimation)
+   * @param metadata - Additional route metadata
+   * @returns The created or replaced NavEntry
+   */
   const replace = (
     route: RouteInput,
     options?: PushOptions,
@@ -265,6 +330,9 @@ export const createContextHistory = () => {
     const targetContext = matchContext(parsed.pathname);
 
     if (targetContext !== activeContext) {
+      // Cross-context replace delegates to push: there is no "current entry"
+      // in the target context to replace. The metadata (search, params) is
+      // already embedded in `parsed`, so it is preserved through push().
       return push(parsed, options);
     }
 
@@ -307,6 +375,14 @@ export const createContextHistory = () => {
     return effectiveDepth >= deep;
   };
 
+  /**
+   * Check whether going forward `deep` steps is possible.
+   *
+   * Returns true if there are at least `deep` entries beyond the cursor.
+   * For `deep < 1`, always returns true.
+   *
+   * @param deep - Number of forward steps to check (default 1)
+   */
   const canGoForward = (deep = 1): boolean => {
     if (deep < 1) {
       return true;
@@ -362,127 +438,39 @@ export const createContextHistory = () => {
   };
 
   /**
-   * Execute a back navigation within the active context.
+   * Switch to a tab context, restoring its last-visited entry or creating
+   * one from `defaultHref` if the tab's stack is empty.
    *
-   * Decision order:
-   * 1. cursor > 0: decrement cursor, return that entry.
-   * 2. cursor === 0: compute effective default target:
-   *    - rootHref (tab context) > defaultHref > '/'
-   *    - If current root entry already matches default, return null (blocked).
-   *    - Otherwise, return the default target path.
+   * Delegates to `prepareChangeTab().commit()` so that registration and
+   * stack logic are centralized. This is the direct-mutation API — the
+   * router layer uses `prepareChangeTab` + `executePlan` instead.
    *
-   * Important: in a tab context with rootHref, defaultHref and '/' are never
-   * used. Tab-root back is terminal once the tab root is reached.
-   *
-   * Never switches context. originContext is inert historical metadata.
-   *
-   * @param defaultHref - Optional fallback target (from IonBackButton or caller)
-   * @returns Target path string, or null if back is blocked
+   * @param tab        - Tab context identifier
+   * @param defaultHref - Fallback URL if the tab has no history
+   * @returns The path of the activated entry
    */
-  const performBack = (defaultHref?: string): string | null => {
-    const stack = ensureContextStack(activeContext);
-    if (stack.entries.length === 0) {
-      return null;
-    }
-
-    // Step 1: cursor > 0 → decrement
-    if (stack.cursor > 0) {
-      stack.cursor -= 1;
-      return entryToPath(stack.entries[stack.cursor]);
-    }
-
-    // Step 2: cursor === 0 → fallback to default
-    const effectiveDefault = getEffectiveDefault(defaultHref);
-    const rootEntry = stack.entries[0];
-
-    // Step 3: already at default → blocked
-    if (entryToPath(rootEntry) === effectiveDefault) {
-      return null;
-    }
-
-    // Step 4: resolve to default target
-    return effectiveDefault;
-  };
-
-  const performForward = (): string | null => {
-    const stack = ensureContextStack(activeContext);
-    if (stack.entries.length === 0 || stack.cursor >= stack.entries.length - 1) {
-      return null;
-    }
-
-    stack.cursor += 1;
-    return entryToPath(stack.entries[stack.cursor]);
+  const changeTab = (tab: string, defaultHref: string): string => {
+    const plan = prepareChangeTab(tab, defaultHref);
+    const parsed = parseRouteInput(defaultHref);
+    const entry = plan.commit({ pathname: parsed.pathname, search: parsed.search });
+    return entryToPath(entry);
   };
 
   /**
-   * Multi-step traversal. A thin wrapper over performBack/performForward.
+   * Reset a tab context to its root entry, truncating all child-page history.
    *
-   * For negative deltas: replays performBack(defaultHref) up to abs(delta)
-   * times, stopping at the first null. If the first step blocks, returns null.
+   * If the root entry matches `defaultHref` (or `defaultHref` is undefined),
+   * it is preserved. Otherwise, the stack is rebuilt with a single entry
+   * from `defaultHref`. The root entry's `originContext` is cleared.
    *
-   * For positive deltas: replays performForward() up to delta times,
-   * stopping at the first null.
+   * Returns the path of the resulting root entry if this is the active tab,
+   * or null if the tab is not active (reset still happens but no navigation
+   * is needed).
    *
-   * @param delta - Number of steps (negative = back, positive = forward)
-   * @param defaultHref - Optional fallback target for non-tab contexts
-   * @returns Final reached path, or null if first step was blocked
+   * @param tab         - Tab context identifier
+   * @param defaultHref - Expected root URL; if provided and different from
+   *   the current root, the root entry is replaced
    */
-  const go = (delta: number, defaultHref?: string): string | null => {
-    const normalizedDelta = Math.trunc(delta);
-
-    if (normalizedDelta === 0) {
-      return null;
-    }
-
-    if (normalizedDelta < 0) {
-      const steps = Math.abs(normalizedDelta);
-      let finalPathname: string | null = null;
-
-      for (let i = 0; i < steps; i += 1) {
-        const pathname = performBack(defaultHref);
-        if (pathname === null) {
-          // First step blocked → cancel entirely; partial → stop here
-          return i === 0 ? null : finalPathname;
-        }
-        finalPathname = pathname;
-      }
-
-      return finalPathname;
-    }
-
-    // Positive delta: replay performForward()
-    let finalPathname: string | null = null;
-
-    for (let i = 0; i < normalizedDelta; i += 1) {
-      const pathname = performForward();
-      if (pathname === null) {
-        return i === 0 ? null : finalPathname;
-      }
-      finalPathname = pathname;
-    }
-
-    return finalPathname;
-  };
-
-  const changeTab = (tab: string, defaultHref: string): string => {
-    ensureTabRegistration(tab, defaultHref);
-    const targetStack = ensureContextStack(tab);
-
-    if (targetStack.entries.length === 0) {
-      const route = parseRouteInput(defaultHref);
-      const synthesized = createNavEntry(tab, route, {
-        originContext: null,
-        routerAnimation: undefined,
-      });
-
-      targetStack.entries.push(synthesized);
-      targetStack.cursor = 0;
-    }
-
-    activeContext = tab;
-    return entryToPath(targetStack.entries[targetStack.cursor]);
-  };
-
   const resetTab = (tab: string, defaultHref?: string): string | null => {
     const targetStack = ensureContextStack(tab);
     const rootEntry = targetStack.entries[0];
@@ -503,7 +491,7 @@ export const createContextHistory = () => {
       }
     }
 
-    targetStack.cursor = targetStack.entries.length > 0 ? 0 : 0;
+    targetStack.cursor = 0;
     if (targetStack.entries[0]) {
       targetStack.entries[0].originContext = null;
     }
@@ -516,6 +504,13 @@ export const createContextHistory = () => {
     return activeEntry ? entryToPath(activeEntry) : null;
   };
 
+  /**
+   * Clear all context stacks and create a single entry for `redirectTo`
+   * in its matched context. Effectively resets the entire navigation model.
+   *
+   * @param redirectTo - URL to navigate to after clearing all history
+   * @returns The path of the created entry
+   */
   const resetAll = (redirectTo: string): string => {
     for (const stack of contexts.values()) {
       stack.entries = [];
@@ -537,6 +532,14 @@ export const createContextHistory = () => {
     return entryToPath(entry);
   };
 
+  /**
+   * Collect all pathnames from entries at or before the cursor in every
+   * context. These are the "retained" views that IonRouterOutlet should
+   * keep in the DOM for instant restore on back navigation.
+   *
+   * Entries beyond the cursor (forward history) are excluded — those
+   * views can be destroyed and will be re-created if the user goes forward.
+   */
   const getRetainedPathnames = (): Set<string> => {
     const retainedPathnames = new Set<string>();
 
@@ -572,7 +575,9 @@ export const createContextHistory = () => {
     }
 
     if (stack.cursor > 0) {
-      return stack.entries[stack.cursor - 1]?.pathname;
+      // Guards above ensure cursor > 0 and entries.length > 0,
+      // so entries[cursor - 1] is always defined.
+      return stack.entries[stack.cursor - 1].pathname;
     }
 
     // cursor === 0: check implicit default (no caller-specific defaultHref)
@@ -585,6 +590,20 @@ export const createContextHistory = () => {
     return implicitDefault;
   };
 
+  /**
+   * Build a `CurrentRouteInfo` object from an entering NavEntry, the
+   * leaving route info, and the navigation context (direction, animation).
+   *
+   * This is the bridge between the context-history model (NavEntry) and
+   * the route-info model consumed by IonRouterOutlet for transition logic.
+   *
+   * Animation precedence: explicit override > entering entry's animation
+   * (for forward) or leaving route's animation (for back).
+   *
+   * @param entering - The NavEntry being navigated to
+   * @param leaving  - The current route info being navigated away from
+   * @param navCtx   - Direction, animation, and optional action override
+   */
   const produceCurrentRouteInfo = (
     entering: NavEntry,
     leaving: CurrentRouteInfo | undefined,
@@ -705,9 +724,16 @@ export const createContextHistory = () => {
    */
   const buildReplaceCommit = (
     contextId: string,
-    animation: PreparedPlan["animation"]
+    animation: PreparedPlan["animation"],
+    generation: number
   ): PreparedPlan["commit"] => {
     return (resolved) => {
+      if (generation <= lastCommittedGeneration) {
+        const s = ensureContextStack(contextId);
+        return s.entries[s.cursor] ?? createNavEntry(contextId, parseRouteInput(resolved), { originContext: null, routerAnimation: animation });
+      }
+      lastCommittedGeneration = generation;
+
       const stack = ensureContextStack(contextId);
       const parsed = parseRouteInput(resolved);
       const entry = createNavEntry(contextId, parsed, {
@@ -737,11 +763,13 @@ export const createContextHistory = () => {
     }
 
     const currentCtx = activeContext;
+    const gen = ++prepareGeneration;
 
     if (stack.cursor > 0) {
       // Cursor move: target is the entry one position back
       const targetEntry = stack.entries[stack.cursor - 1];
       const target = entryToPath(targetEntry);
+      const finalCursor = stack.cursor - 1;
 
       return {
         transport: "replace",
@@ -751,8 +779,14 @@ export const createContextHistory = () => {
         expectedComparableTarget: target,
         animation,
         commit: () => {
+          if (gen < prepareGeneration || gen <= lastCommittedGeneration) {
+            const s = ensureContextStack(currentCtx);
+            return s.entries[s.cursor];
+          }
+          lastCommittedGeneration = gen;
+
           const s = ensureContextStack(currentCtx);
-          s.cursor -= 1;
+          s.cursor = finalCursor;
           activeContext = currentCtx;
           return s.entries[s.cursor];
         },
@@ -773,7 +807,7 @@ export const createContextHistory = () => {
       action: "pop",
       expectedComparableTarget: effectiveDefault,
       animation,
-      commit: buildReplaceCommit(currentCtx, animation),
+      commit: buildReplaceCommit(currentCtx, animation, gen),
     };
   };
 
@@ -789,7 +823,9 @@ export const createContextHistory = () => {
     }
 
     const currentCtx = activeContext;
-    const targetEntry = stack.entries[stack.cursor + 1];
+    const gen = ++prepareGeneration;
+    const finalCursor = stack.cursor + 1;
+    const targetEntry = stack.entries[finalCursor];
     const target = entryToPath(targetEntry);
 
     return {
@@ -800,8 +836,14 @@ export const createContextHistory = () => {
       expectedComparableTarget: target,
       animation,
       commit: () => {
+        if (gen < prepareGeneration || gen <= lastCommittedGeneration) {
+          const s = ensureContextStack(currentCtx);
+          return s.entries[s.cursor];
+        }
+        lastCommittedGeneration = gen;
+
         const s = ensureContextStack(currentCtx);
-        s.cursor += 1;
+        s.cursor = finalCursor;
         activeContext = currentCtx;
         return s.entries[s.cursor];
       },
@@ -828,6 +870,7 @@ export const createContextHistory = () => {
     }
 
     const currentCtx = activeContext;
+    const gen = ++prepareGeneration;
 
     if (normalizedDelta < 0) {
       // Simulate back steps to find final target
@@ -872,8 +915,14 @@ export const createContextHistory = () => {
         expectedComparableTarget: finalTarget,
         animation,
         commit: isFallback
-          ? buildReplaceCommit(currentCtx, animation)
+          ? buildReplaceCommit(currentCtx, animation, gen)
           : () => {
+              if (gen < prepareGeneration || gen <= lastCommittedGeneration) {
+                const s = ensureContextStack(currentCtx);
+                return s.entries[s.cursor];
+              }
+              lastCommittedGeneration = gen;
+
               const s = ensureContextStack(currentCtx);
               s.cursor = finalCursor;
               activeContext = currentCtx;
@@ -911,6 +960,12 @@ export const createContextHistory = () => {
       expectedComparableTarget: finalTarget,
       animation,
       commit: () => {
+        if (gen < prepareGeneration || gen <= lastCommittedGeneration) {
+          const s = ensureContextStack(currentCtx);
+          return s.entries[s.cursor];
+        }
+        lastCommittedGeneration = gen;
+
         const s = ensureContextStack(currentCtx);
         s.cursor = finalCursor;
         activeContext = currentCtx;
@@ -926,7 +981,11 @@ export const createContextHistory = () => {
    * potentially synthesizes a first entry for an empty tab.
    */
   const prepareChangeTab = (tab: string, defaultHref: string): PreparedPlan => {
+    // Note: ensureTabRegistration is a setup side-effect (idempotent),
+    // not a navigation mutation. Registration must happen before reading
+    // the stack so the context and prefix exist for matching.
     ensureTabRegistration(tab, defaultHref);
+    const gen = ++prepareGeneration;
     const targetStack = ensureContextStack(tab);
 
     const targetPath = targetStack.entries.length > 0
@@ -940,6 +999,12 @@ export const createContextHistory = () => {
       action: "push",
       expectedComparableTarget: targetPath,
       commit: (resolved) => {
+        if (gen < prepareGeneration || gen <= lastCommittedGeneration) {
+          const stack = ensureContextStack(tab);
+          return stack.entries[stack.cursor] ?? createNavEntry(tab, parseRouteInput(resolved), { originContext: null, routerAnimation: undefined });
+        }
+        lastCommittedGeneration = gen;
+
         const stack = ensureContextStack(tab);
         if (stack.entries.length === 0) {
           const parsed = parseRouteInput(resolved);
@@ -978,6 +1043,8 @@ export const createContextHistory = () => {
       return null;
     }
 
+    const gen = ++prepareGeneration;
+
     return {
       transport: "replace",
       target: targetPath,
@@ -985,6 +1052,12 @@ export const createContextHistory = () => {
       action: "pop",
       expectedComparableTarget: targetPath,
       commit: (resolved) => {
+        if (gen < prepareGeneration || gen <= lastCommittedGeneration) {
+          const stack = ensureContextStack(tab);
+          return stack.entries[stack.cursor] ?? createNavEntry(tab, parseRouteInput(resolved), { originContext: null, routerAnimation: undefined });
+        }
+        lastCommittedGeneration = gen;
+
         const stack = ensureContextStack(tab);
         const root = stack.entries[0];
         const rootMatches = Boolean(root) && (defaultHref === undefined || entryToPath(root) === defaultHref);
@@ -1016,6 +1089,8 @@ export const createContextHistory = () => {
    * Always returns a plan (resetAll always succeeds).
    */
   const prepareResetAll = (redirectTo: string): PreparedPlan => {
+    const gen = ++prepareGeneration;
+
     return {
       transport: "replace",
       target: redirectTo,
@@ -1023,6 +1098,12 @@ export const createContextHistory = () => {
       action: "replace",
       expectedComparableTarget: redirectTo,
       commit: (resolved) => {
+        if (gen < prepareGeneration || gen <= lastCommittedGeneration) {
+          const s = ensureContextStack(activeContext);
+          return s.entries[s.cursor] ?? createNavEntry(activeContext, parseRouteInput(resolved), { originContext: null, routerAnimation: undefined });
+        }
+        lastCommittedGeneration = gen;
+
         for (const stack of contexts.values()) {
           stack.entries = [];
           stack.cursor = 0;
@@ -1082,13 +1163,12 @@ export const createContextHistory = () => {
     produceCurrentRouteInfo,
     handleSetCurrentTab,
     snapshot,
-    performBack,
-    performForward,
-    go,
     currentEntry,
     canGoBack,
     canGoForward,
-    // Prepared (non-mutating) methods
+    // Prepared (non-mutating) methods for use with router's
+    // prepare+commit lifecycle. All commit() closures are guarded
+    // by a generation counter — see prepareGeneration/lastCommittedGeneration.
     prepareBack,
     prepareForward,
     prepareGo,

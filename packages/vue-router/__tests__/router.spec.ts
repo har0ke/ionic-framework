@@ -470,4 +470,130 @@ describe("createIonRouter integration", () => {
     expect(h.router.replace).toHaveBeenLastCalledWith("/a");
     expect(processNextHandler).toHaveBeenCalled();
   });
+
+  it("handleNavigateBack is a no-op when back is fully blocked", () => {
+    const h = createRouterHarness("/");
+
+    // Push '/' as the only entry — already at default target, back is blocked
+    h.nav.handleNavigate("/", "push", "forward");
+    h.commitNavigation("/");
+
+    const pushCalls = (h.router.push as jest.Mock).mock.calls.length;
+    const replaceCalls = (h.router.replace as jest.Mock).mock.calls.length;
+
+    // Call handleNavigateBack — should be a no-op
+    h.nav.handleNavigateBack();
+
+    // No new router calls were made
+    expect((h.router.push as jest.Mock).mock.calls.length).toBe(pushCalls);
+    expect((h.router.replace as jest.Mock).mock.calls.length).toBe(replaceCalls);
+
+    // Route info unchanged
+    expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/");
+  });
+
+  it("handleNavigate forwards action on pendingHint", () => {
+    const h = createRouterHarness("/");
+
+    h.nav.handleNavigate("/a", "replace", "root");
+    h.commitNavigation("/a", { replaced: true });
+
+    expect(h.nav.getCurrentRouteInfo()?.routerAction).toBe("replace");
+    expect(h.nav.getCurrentRouteInfo()?.routerDirection).toBe("root");
+  });
+
+  it("changeTab with undefined path is a no-op", () => {
+    const h = createRouterHarness("/");
+
+    h.nav.handleNavigate("/a", "push", "forward");
+    h.commitNavigation("/a");
+
+    const pushCalls = (h.router.push as jest.Mock).mock.calls.length;
+    const replaceCalls = (h.router.replace as jest.Mock).mock.calls.length;
+
+    // Call changeTab with undefined path
+    h.nav.changeTab("feed", undefined);
+
+    // No new router calls
+    expect((h.router.push as jest.Mock).mock.calls.length).toBe(pushCalls);
+    expect((h.router.replace as jest.Mock).mock.calls.length).toBe(replaceCalls);
+  });
+
+  it("tab round-trip: tabA -> tabB -> tabA preserves each tab's cursor", () => {
+    const h = createRouterHarness("/");
+
+    // Navigate to tab A
+    h.nav.handleNavigate("/tabs/tabA", "push", "forward");
+    h.commitNavigation("/tabs/tabA");
+    h.nav.handleSetCurrentTab("tabA", "/tabs/tabA");
+
+    // Push a child page in tab A
+    h.nav.handleNavigate("/tabs/tabA/detail", "push", "forward");
+    h.commitNavigation("/tabs/tabA/detail");
+
+    expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/tabs/tabA/detail");
+
+    // Switch to tab B
+    h.nav.changeTab("tabB", "/tabs/tabB");
+    h.commitNavigation("/tabs/tabB");
+    h.nav.handleSetCurrentTab("tabB", "/tabs/tabB");
+
+    expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/tabs/tabB");
+
+    // Push a child page in tab B
+    h.nav.handleNavigate("/tabs/tabB/settings", "push", "forward");
+    h.commitNavigation("/tabs/tabB/settings");
+
+    // Switch back to tab A — should restore to /tabs/tabA/detail
+    h.nav.changeTab("tabA", "/tabs/tabA");
+    h.commitNavigation("/tabs/tabA/detail");
+
+    expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/tabs/tabA/detail");
+
+    // Switch back to tab B — should restore to /tabs/tabB/settings
+    h.nav.changeTab("tabB", "/tabs/tabB");
+    h.commitNavigation("/tabs/tabB/settings");
+
+    expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/tabs/tabB/settings");
+  });
+
+  it("aborted plan clears pending state without corrupting context history", () => {
+    const h = createRouterHarness("/");
+
+    h.nav.handleNavigate("/a", "push", "forward");
+    h.commitNavigation("/a");
+    h.nav.handleNavigate("/b", "push", "forward");
+    h.commitNavigation("/b");
+
+    // Initiate goBack which sets pendingPlan
+    h.nav.goBack();
+
+    // Simulate Vue Router aborting the navigation (guard returned false)
+    h.runAfterEachOnly("/a", "/b", NavigationFailureType.aborted);
+
+    // Pending should be cleared, route info unchanged
+    expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/b");
+
+    // Next navigation should work normally
+    h.nav.handleNavigate("/c", "push", "forward");
+    h.commitNavigation("/c");
+    expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/c");
+  });
+
+  it("plan mismatch (guard redirect) falls through to external navigation", () => {
+    const h = createRouterHarness("/");
+
+    h.nav.handleNavigate("/a", "push", "forward");
+    h.commitNavigation("/a");
+
+    // Initiate goBack — expects to land at "/"
+    h.nav.goBack();
+
+    // Vue Router resolves to a different URL (guard redirected)
+    // The afterEach fires with success but at "/login" not "/"
+    h.commitNavigation("/login");
+
+    // Plan mismatch → treated as external push to /login
+    expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/login");
+  });
 });

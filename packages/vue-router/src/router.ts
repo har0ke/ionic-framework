@@ -29,12 +29,21 @@ type PendingExternalHint = {
   action?: RouteAction;
 };
 
+/**
+ * Extract the search/query portion from a Vue Router fullPath,
+ * stripping hash fragments. Hash changes do not trigger Ionic page
+ * transitions, so they are excluded from route comparison.
+ */
 const getSearchFromFullPath = (fullPath: string): string => {
   const [pathAndSearch] = fullPath.split("#", 1);
   const [, search = ""] = pathAndSearch.split("?", 2);
   return search;
 };
 
+/**
+ * Build a comparable path string (pathname + query, no hash) from a
+ * Vue Router resolved route. Used for deduplication and plan matching.
+ */
 const toComparablePath = (route: RouteLocationNormalized): string => {
   const search = getSearchFromFullPath(route.fullPath);
   return search ? `${route.path}?${search}` : route.path;
@@ -50,6 +59,16 @@ const routeInfoToComparablePath = (routeInfo?: RouteInfo): string | undefined =>
     : routeInfo.pathname;
 };
 
+/**
+ * Create the Ionic Vue Router integration layer.
+ *
+ * Wraps a Vue Router instance with context-aware navigation (tabs, back
+ * fallback, prepare+commit lifecycle). Installs `beforeEach`/`afterEach`
+ * hooks for browser-history interception and plan verification.
+ *
+ * Returned methods are injected as `"navManager"` for use by IonTabBar,
+ * IonTabButton, IonBackButton, IonRouterOutlet, and the `useIonRouter` hook.
+ */
 export const createIonRouter = (
   opts: IonicVueRouterOptions,
   router: Router
@@ -109,13 +128,20 @@ export const createIonRouter = (
   const executePlan = (plan: PreparedPlan, animation?: AnimationBuilder): void => {
     pendingPlan = { plan, animation: animation ?? plan.animation };
 
+    // void: afterEach handles all navigation outcomes (success, failure,
+    // redirect). The promise is intentionally not awaited.
     if (plan.transport === "replace") {
-      router.replace(plan.target);
+      void router.replace(plan.target);
     } else {
-      router.push(plan.target);
+      void router.push(plan.target);
     }
   };
 
+  /**
+   * Navigate forward or backward by `delta` steps using context-aware
+   * traversal. Negative = back, positive = forward. Dispatches via
+   * prepare+commit pattern through Vue Router.
+   */
   const go = (delta: number, routerAnimation?: AnimationBuilder) => {
     const plan = contextHistory.prepareGo(delta);
     if (plan === null) {
@@ -125,6 +151,11 @@ export const createIonRouter = (
     executePlan(plan, routerAnimation);
   };
 
+  /**
+   * Navigate one step back in the active context. At cursor 0, falls
+   * back to rootHref (tab) or "/" (default). Uses replace semantics.
+   * Called by `useIonRouter().back()` and the `ionBackButton` handler.
+   */
   const goBack = (routerAnimation?: AnimationBuilder) => {
     const plan = contextHistory.prepareBack();
     if (plan === null) {
@@ -134,6 +165,10 @@ export const createIonRouter = (
     executePlan(plan, routerAnimation);
   };
 
+  /**
+   * Navigate one step forward in the active context. No-op if there
+   * are no forward entries. Uses replace semantics.
+   */
   const goForward = (routerAnimation?: AnimationBuilder) => {
     const plan = contextHistory.prepareForward();
     if (plan === null) {
@@ -187,6 +222,44 @@ export const createIonRouter = (
     next();
   });
 
+  // ── afterEach: Vue Router redirect/cancellation behavior ──────────
+  //
+  // Vue Router 4 has two redirect mechanisms with different afterEach
+  // implications:
+  //
+  // 1. Guard redirect (return "/other" or next("/other")):
+  //    Vue Router handles this internally as NAVIGATION_GUARD_REDIRECT
+  //    (error type 2, not publicly exposed). It recursively calls
+  //    pushWithRedirect and fires afterEach ONLY ONCE for the final
+  //    resolved destination, with failure = undefined (success).
+  //    Our afterEach never sees the original navigation at all.
+  //    The expectedComparableTarget mismatch catches this: the plan
+  //    was for "/a" but we arrived at "/b", so the plan is dropped
+  //    and the navigation is treated as external.
+  //
+  // 2. Imperative router.push/replace inside a guard:
+  //    This starts a separate navigation. Vue Router detects the
+  //    pendingLocation changed via checkCanceledNavigation and fires
+  //    afterEach for the ORIGINAL navigation with failure.type ===
+  //    NavigationFailureType.cancelled. Then the replacement
+  //    navigation gets its own afterEach (success or failure).
+  //    We preserve pendingPlan on cancelled so the replacement
+  //    navigation's afterEach can consume it. This is safe because:
+  //    - If the replacement is from user code (not executePlan),
+  //      no new pendingPlan is set, and the stale plan's
+  //      expectedComparableTarget will mismatch → plan dropped.
+  //    - If the replacement IS from executePlan (rapid-fire,
+  //      unsupported), executePlan already overwrote pendingPlan
+  //      with the new plan before dispatching.
+  //
+  // 3. NavigationFailureType.duplicated:
+  //    Navigating to the current URL. No state change needed.
+  //    We clear pending.
+  //
+  // In all cases, the prepare+commit pattern guarantees no context
+  // history state was mutated before afterEach confirms success.
+  // ────────────────────────────────────────────────────────────────────
+
   router.afterEach(
     (
       to: RouteLocationNormalized,
@@ -206,14 +279,19 @@ export const createIonRouter = (
           return;
         }
 
+        // Always reset browser interception flag on any failure, even
+        // if it wasn't the interception abort above. Prevents the flag
+        // from staying true permanently if the re-dispatched navigation
+        // itself fails with cancelled or duplicated.
+        browserInterceptionInFlight = false;
+
         if (failure.type === NavigationFailureType.aborted) {
           // No rollback needed: prepare+commit means no state was mutated.
           clearPending();
         } else if (failure.type === NavigationFailureType.cancelled) {
-          // Cancelled navigations may be followed by the navigation that
-          // replaced them; keep pending state so it can be consumed by the
-          // next afterEach.
+          // Preserve pending — see comment block above for rationale.
         } else {
+          // duplicated or unknown failure types.
           clearPending();
         }
 
@@ -226,6 +304,9 @@ export const createIonRouter = (
       const leaving = currentRouteInfo;
 
       // Deduplicate: if the resolved URL matches the current route, skip.
+      // This uses `leaving` (captured before clearPending) which is the
+      // pre-commit state — correct because no plan has been committed yet.
+      // The prepared-plan path below has its own dedup via expectedComparableTarget.
       if (
         leaving !== undefined &&
         routeInfoToComparablePath(leaving) === toComparablePath(to)
@@ -296,6 +377,17 @@ export const createIonRouter = (
     }
   );
 
+  /**
+   * Navigate back using the IonBackButton / swipe-back contract.
+   *
+   * Uses `prepareBack(defaultHref)` which respects rootHref for tab
+   * contexts and falls back to `defaultHref > "/"` for the default
+   * context. Always uses replace semantics (no push-for-back).
+   * No-op if back is fully blocked (already at effective default).
+   *
+   * @param defaultHref     - Fallback URL from `IonBackButton.defaultHref`
+   * @param routerAnimation - Transition animation override
+   */
   const handleNavigateBack = (
     defaultHref?: string,
     routerAnimation?: AnimationBuilder
@@ -311,25 +403,45 @@ export const createIonRouter = (
     // Nothing to do.
   };
 
+  /**
+   * Navigate to a path with explicit action and direction hints.
+   *
+   * This is the "external navigation" entry point — it does NOT use the
+   * prepare+commit pattern. Instead it stores a `pendingHint` with the
+   * caller's direction/animation/action, and the afterEach classifies
+   * the navigation via push/replace on the context history.
+   *
+   * Called by `useIonRouter().push/replace/navigate()` and IonRouterOutlet.
+   *
+   * @param path             - Vue Router route location (string or object)
+   * @param routerAction     - "push" or "replace" (default "push")
+   * @param routerDirection  - "forward", "back", "root", or "none" (default "forward")
+   * @param routerAnimation  - Transition animation override
+   */
   const handleNavigate = (
     path: RouteLocationRaw,
     routerAction: RouteAction = "push",
     routerDirection: RouteDirection = "forward",
-    routerAnimation?: AnimationBuilder,
-    _tab?: string
+    routerAnimation?: AnimationBuilder
   ) => {
     pendingHint = {
       direction: routerDirection,
       animation: routerAnimation,
+      action: routerAction,
     };
 
+    // void: afterEach handles all navigation outcomes.
     if (routerAction === "replace") {
-      router.replace(path);
+      void router.replace(path);
     } else {
-      router.push(path);
+      void router.push(path);
     }
   };
 
+  /**
+   * Convenience wrapper over `handleNavigate` accepting an options object.
+   * Destructures `ExternalNavigationOptions` and delegates.
+   */
   const navigate = (navigationOptions: ExternalNavigationOptions) => {
     const { routerAnimation, routerDirection, routerLink, routerAction } =
       navigationOptions;
@@ -342,6 +454,16 @@ export const createIonRouter = (
     );
   };
 
+  /**
+   * Switch to a tab context via prepare+commit. The plan navigates to the
+   * tab's last-visited entry, or synthesizes one from `path` if the tab
+   * stack is empty. No-op if `path` is falsy.
+   *
+   * Called by IonTabButton when the user taps a different tab.
+   *
+   * @param tab  - Tab context identifier
+   * @param path - Fallback URL / current href for the tab
+   */
   const changeTab = (tab: string, path?: string) => {
     if (!path) {
       return;
@@ -351,6 +473,15 @@ export const createIonRouter = (
     executePlan(plan);
   };
 
+  /**
+   * Reset a tab to its root entry via prepare+commit. Truncates child-page
+   * history. No-op if the tab is not the active context.
+   *
+   * Called by IonTabButton when the user taps the already-active tab.
+   *
+   * @param tab         - Tab context identifier
+   * @param defaultHref - Expected root URL for the tab
+   */
   const resetTab = (tab: string, defaultHref?: string) => {
     const plan = contextHistory.prepareResetTab(tab, defaultHref);
     if (plan === null) {
@@ -360,18 +491,36 @@ export const createIonRouter = (
     executePlan(plan);
   };
 
+  /**
+   * Clear all navigation history across all contexts and navigate to
+   * `redirectTo`. Used for hard-reset scenarios (e.g. logout).
+   */
   const resetAll = (redirectTo: string) => {
     const plan = contextHistory.prepareResetAll(redirectTo);
     executePlan(plan);
   };
 
+  /** Return the current route metadata, or undefined before first navigation. */
   const getCurrentRouteInfo = (): RouteInfo | undefined => currentRouteInfo;
 
+  /**
+   * Return the route info for the page being navigated away from.
+   * Falls back to `currentRouteInfo` if no leaving info has been set yet
+   * (i.e. before the first navigation completes).
+   */
   const getLeavingRouteInfo = (): RouteInfo | undefined =>
     leavingRouteInfo ?? currentRouteInfo;
 
+  /**
+   * Check whether going back `deep` steps is possible in the active context.
+   * Uses implicit defaults only (rootHref for tabs, "/" otherwise).
+   * Does NOT accept a `defaultHref` — the public API is context-aware only.
+   */
   const canGoBack = (deep = 1): boolean => contextHistory.canGoBack(deep);
 
+  /**
+   * Check whether going forward `deep` steps is possible in the active context.
+   */
   const canGoForward = (deep = 1): boolean => contextHistory.canGoForward(deep);
 
   /**
@@ -385,12 +534,24 @@ export const createIonRouter = (
     contextHistory.handleSetCurrentTab(tab, rootHref);
   };
 
+  /**
+   * Register a callback that fires after every successful navigation.
+   * Used by IonTabBar to re-check active tab state.
+   */
   const registerHistoryChangeListener = (cb: () => void) => {
     historyChangeListeners.push(cb);
   };
 
+  /**
+   * Return a read-only snapshot of the context-history model for debugging
+   * and devtools. Not part of the navigation correctness story.
+   */
   const getContextSnapshot = () => contextHistory.snapshot();
 
+  /**
+   * Return the set of pathnames that should be retained in the DOM by
+   * IonRouterOutlet (entries at or before cursor in every context).
+   */
   const getRetainedPathnames = () => contextHistory.getRetainedPathnames();
 
   if (typeof document !== "undefined") {

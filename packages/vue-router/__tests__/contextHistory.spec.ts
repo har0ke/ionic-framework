@@ -1,8 +1,30 @@
 import { createContextHistory } from "../src/contextHistory";
-import type { ContextConfig } from "../src/types";
+import type { ContextConfig, PreparedPlan } from "../src/types";
 
 const tabConfig: ContextConfig = {
   clearOnExternalPush: false,
+};
+
+/**
+ * Helpers that mirror the old immediate APIs via prepare+commit.
+ * Used by tests that verify navigation behavior through the public API.
+ */
+const commitPlan = (plan: PreparedPlan | null): string | null => {
+  if (plan === null) return null;
+  const entry = plan.commit({ pathname: plan.target.split("?")[0], search: plan.target.includes("?") ? plan.target.split("?")[1] : "" });
+  return entry.search ? `${entry.pathname}?${entry.search}` : entry.pathname;
+};
+
+const doBack = (ctx: ReturnType<typeof createContextHistory>, defaultHref?: string): string | null => {
+  return commitPlan(ctx.prepareBack(defaultHref));
+};
+
+const doForward = (ctx: ReturnType<typeof createContextHistory>): string | null => {
+  return commitPlan(ctx.prepareForward());
+};
+
+const doGo = (ctx: ReturnType<typeof createContextHistory>, delta: number, defaultHref?: string): string | null => {
+  return commitPlan(ctx.prepareGo(delta, defaultHref));
 };
 
 describe("Context History (registry + matching)", () => {
@@ -83,7 +105,7 @@ describe("Context History (Chunk B stack operations)", () => {
     expect(ctx.currentEntry()?.originContext).toEqual("default");
   });
 
-  it("clearOnExternalPush true clears target context before push", () => {
+  it("default context clearOnExternalPush clears its entries on cross-context push", () => {
     const ctx = createContextHistory();
     ctx.registerContext("feed", "/tabs/feed", tabConfig);
     ctx.registerContext("discover", "/tabs/discover", tabConfig);
@@ -155,6 +177,41 @@ describe("Context History (Chunk B stack operations)", () => {
     expect(ctx.canGoBack(2)).toBe(false);
   });
 
+  it("replace on empty stack delegates to push", () => {
+    const ctx = createContextHistory();
+
+    // Empty stack — replace should create a first entry via push
+    const entry = ctx.replace("/a/");
+    expect(entry.pathname).toBe("/a/");
+    expect(ctx.currentEntry()?.pathname).toBe("/a/");
+
+    // Now replace should overwrite in place
+    const entry2 = ctx.replace("/b/");
+    expect(entry2.pathname).toBe("/b/");
+    expect(ctx.currentEntry()?.pathname).toBe("/b/");
+    // Should still have only 1 entry (replaced, not pushed)
+    expect(ctx.canGoBack(1)).toBe(true); // '/b/' != '/' → fallback offset
+    expect(ctx.canGoBack(2)).toBe(false); // only 1 entry
+  });
+
+  it("canGoBack(0) and canGoForward(0) always return true", () => {
+    const ctx = createContextHistory();
+
+    // Empty stack — even with no entries, deep < 1 returns true
+    expect(ctx.canGoBack(0)).toBe(true);
+    expect(ctx.canGoForward(0)).toBe(true);
+
+    ctx.push("/a/");
+    expect(ctx.canGoBack(0)).toBe(true);
+    expect(ctx.canGoForward(0)).toBe(true);
+  });
+
+  it("canGoBack and canGoForward with negative deep return true", () => {
+    const ctx = createContextHistory();
+    expect(ctx.canGoBack(-1)).toBe(true);
+    expect(ctx.canGoForward(-1)).toBe(true);
+  });
+
   it("canGoBack with rootHref not matching root entry adds offset", () => {
     const ctx = createContextHistory();
     ctx.registerContext("feed", "/tabs/feed", tabConfig);
@@ -179,31 +236,30 @@ describe("Context History (Chunk B stack operations)", () => {
 });
 
 describe("Context History (Chunk C navigation algorithms)", () => {
-  it("performBack decrements cursor within context", () => {
+  it("back decrements cursor within context", () => {
     const ctx = createContextHistory();
     ctx.registerContext("feed", "/tabs/feed", tabConfig);
 
     ctx.push("/tabs/feed/");
     ctx.push("/tabs/feed/details/");
 
-    expect(ctx.performBack()).toBe("/tabs/feed/");
+    expect(doBack(ctx)).toBe("/tabs/feed/");
     expect(ctx.currentEntry()?.pathname).toBe("/tabs/feed/");
   });
 
-  it("performBack at cursor 0 with rootHref matching current entry blocks", () => {
+  it("back at cursor 0 with rootHref matching current entry blocks", () => {
     const ctx = createContextHistory();
     ctx.registerContext("feed", "/tabs/feed", tabConfig);
-    // Simulate IonTabBar setting rootHref
     ctx.handleSetCurrentTab("feed", "/tabs/feed/");
 
     ctx.push("/tabs/feed/");
 
     // Already at tab root → blocked
-    expect(ctx.performBack()).toBeNull();
+    expect(doBack(ctx)).toBeNull();
     expect(ctx.currentEntry()?.pathname).toBe("/tabs/feed/");
   });
 
-  it("performBack at cursor 0 falls back to rootHref for deep-linked tab page", () => {
+  it("back at cursor 0 falls back to rootHref for deep-linked tab page", () => {
     const ctx = createContextHistory();
     ctx.registerContext("feed", "/tabs/feed", tabConfig);
     ctx.handleSetCurrentTab("feed", "/tabs/feed/");
@@ -211,10 +267,10 @@ describe("Context History (Chunk C navigation algorithms)", () => {
     ctx.push("/tabs/feed/deep/");
 
     // Deep-linked page backs to tab root
-    expect(ctx.performBack()).toBe("/tabs/feed/");
+    expect(doBack(ctx)).toBe("/tabs/feed/");
   });
 
-  it("performBack tab context ignores passed defaultHref (rootHref wins)", () => {
+  it("back tab context ignores passed defaultHref (rootHref wins)", () => {
     const ctx = createContextHistory();
     ctx.registerContext("feed", "/tabs/feed", tabConfig);
     ctx.handleSetCurrentTab("feed", "/tabs/feed/");
@@ -222,58 +278,58 @@ describe("Context History (Chunk C navigation algorithms)", () => {
     ctx.push("/tabs/feed/deep/");
 
     // rootHref wins — defaultHref is ignored in tab contexts
-    expect(ctx.performBack("/other/")).toBe("/tabs/feed/");
+    expect(doBack(ctx, "/other/")).toBe("/tabs/feed/");
   });
 
-  it("performBack at cursor 0 in non-tab context uses defaultHref", () => {
+  it("back at cursor 0 in non-tab context uses defaultHref", () => {
     const ctx = createContextHistory();
 
     ctx.push("/deep-link/");
 
     // Non-tab: no rootHref, falls through to defaultHref
-    expect(ctx.performBack("/home/")).toBe("/home/");
+    expect(doBack(ctx, "/home/")).toBe("/home/");
   });
 
-  it("performBack at cursor 0 in non-tab context defaults to /", () => {
+  it("back at cursor 0 in non-tab context defaults to /", () => {
     const ctx = createContextHistory();
 
     ctx.push("/deep-link/");
 
     // Non-tab, no defaultHref → falls back to '/'
-    expect(ctx.performBack()).toBe("/");
+    expect(doBack(ctx)).toBe("/");
   });
 
-  it("performBack at cursor 0 blocks when already at default target", () => {
+  it("back at cursor 0 blocks when already at default target", () => {
     const ctx = createContextHistory();
 
     ctx.push("/");
 
     // Already at '/' → blocked
-    expect(ctx.performBack()).toBeNull();
+    expect(doBack(ctx)).toBeNull();
   });
 
-  it("performForward advances once and returns null at top", () => {
+  it("forward advances once and returns null at top", () => {
     const ctx = createContextHistory();
 
     ctx.push("/a/");
     ctx.push("/b/");
     ctx.push("/c/");
 
-    ctx.performBack();
+    doBack(ctx);
     expect(ctx.currentEntry()?.pathname).toBe("/b/");
 
-    expect(ctx.performForward()).toBe("/c/");
-    expect(ctx.performForward()).toBeNull();
+    expect(doForward(ctx)).toBe("/c/");
+    expect(doForward(ctx)).toBeNull();
   });
 
-  it("performBack and performForward preserve query parameters in returned paths", () => {
+  it("back and forward preserve query parameters in returned paths", () => {
     const ctx = createContextHistory();
 
     ctx.push("/a/?q=1");
     ctx.push("/b/?q=2");
 
-    expect(ctx.performBack()).toBe("/a/?q=1");
-    expect(ctx.performForward()).toBe("/b/?q=2");
+    expect(doBack(ctx)).toBe("/a/?q=1");
+    expect(doForward(ctx)).toBe("/b/?q=2");
   });
 
   it("go(-1) and go(-N) move back with partial completion semantics", () => {
@@ -285,9 +341,9 @@ describe("Context History (Chunk C navigation algorithms)", () => {
     ctx.push("/tabs/feed/one/");
     ctx.push("/tabs/feed/two/");
 
-    expect(ctx.go(-1)).toBe("/tabs/feed/one/");
-    // At cursor 0, rootHref matches root entry → performBack returns null → stops
-    expect(ctx.go(-5)).toBe("/tabs/feed/");
+    expect(doGo(ctx, -1)).toBe("/tabs/feed/one/");
+    // At cursor 0, rootHref matches root entry → back returns null → stops
+    expect(doGo(ctx, -5)).toBe("/tabs/feed/");
     expect(ctx.currentEntry()?.pathname).toBe("/tabs/feed/");
   });
 
@@ -299,20 +355,20 @@ describe("Context History (Chunk C navigation algorithms)", () => {
     ctx.push("/tabs/feed/");
 
     // At tab root with matching rootHref → blocked on first step
-    expect(ctx.go(-1)).toBeNull();
+    expect(doGo(ctx, -1)).toBeNull();
     expect(ctx.currentEntry()?.pathname).toBe("/tabs/feed/");
   });
 
-  it("go(+N) replays performForward and returns null when no movement", () => {
+  it("go(+N) replays forward and returns null when no movement", () => {
     const ctx = createContextHistory();
 
     ctx.push("/a/");
     ctx.push("/b/");
     ctx.push("/c/");
 
-    expect(ctx.go(-2)).toBe("/a/");
-    expect(ctx.go(10)).toBe("/c/");
-    expect(ctx.go(1)).toBeNull();
+    expect(doGo(ctx, -2)).toBe("/a/");
+    expect(doGo(ctx, 10)).toBe("/c/");
+    expect(doGo(ctx, 1)).toBeNull();
   });
 
   it("go returns full path including query parameters", () => {
@@ -322,8 +378,8 @@ describe("Context History (Chunk C navigation algorithms)", () => {
     ctx.push("/b/?q=2");
     ctx.push("/c/?q=3");
 
-    expect(ctx.go(-2)).toBe("/a/?q=1");
-    expect(ctx.go(1)).toBe("/b/?q=2");
+    expect(doGo(ctx, -2)).toBe("/a/?q=1");
+    expect(doGo(ctx, 1)).toBe("/b/?q=2");
   });
 });
 
@@ -346,6 +402,34 @@ describe("Context History (Chunk D tab/reset/snapshot/output)", () => {
     expect(ctx.currentEntry()?.pathname).toBe("/tabs/feed/page2/");
   });
 
+  it("tab round-trip: tabA -> tabB -> tabA preserves cursor positions", () => {
+    const ctx = createContextHistory();
+    ctx.registerContext("tabA", "/tabs/tabA", tabConfig);
+    ctx.registerContext("tabB", "/tabs/tabB", tabConfig);
+    ctx.handleSetCurrentTab("tabA", "/tabs/tabA/");
+    ctx.handleSetCurrentTab("tabB", "/tabs/tabB/");
+
+    // Navigate in tab A
+    ctx.push("/tabs/tabA/");
+    ctx.push("/tabs/tabA/detail/");
+    expect(ctx.currentEntry()?.pathname).toBe("/tabs/tabA/detail/");
+
+    // Switch to tab B
+    expect(ctx.changeTab("tabB", "/tabs/tabB/")).toBe("/tabs/tabB/");
+    ctx.push("/tabs/tabB/settings/");
+    expect(ctx.currentEntry()?.pathname).toBe("/tabs/tabB/settings/");
+
+    // Switch back to tab A — should resume at detail
+    expect(ctx.changeTab("tabA", "/tabs/tabA/")).toBe("/tabs/tabA/detail/");
+    expect(ctx.currentEntry()?.pathname).toBe("/tabs/tabA/detail/");
+    expect(ctx.canGoBack(1)).toBe(true);
+
+    // Switch back to tab B — should resume at settings
+    expect(ctx.changeTab("tabB", "/tabs/tabB/")).toBe("/tabs/tabB/settings/");
+    expect(ctx.currentEntry()?.pathname).toBe("/tabs/tabB/settings/");
+    expect(ctx.canGoBack(1)).toBe(true);
+  });
+
   it("resetTab resets active and inactive tabs and clears surviving root originContext", () => {
     const ctx = createContextHistory();
     ctx.registerContext("feed", "/tabs/feed", tabConfig);
@@ -358,7 +442,7 @@ describe("Context History (Chunk D tab/reset/snapshot/output)", () => {
     expect(ctx.resetTab("feed", "/tabs/feed/")).toBe("/tabs/feed/");
     expect(ctx.currentEntry()?.pathname).toBe("/tabs/feed/");
     // Tab root matches rootHref → back is blocked
-    expect(ctx.performBack()).toBeNull();
+    expect(doBack(ctx)).toBeNull();
 
     ctx.push("/login/again/");
     expect(ctx.resetTab("feed", "/tabs/feed/")).toBeNull();
@@ -394,7 +478,7 @@ describe("Context History (Chunk D tab/reset/snapshot/output)", () => {
     ctx.push("/login/");
     ctx.push("/signup/");
 
-    expect(ctx.go(-1)).toBe("/login/");
+    expect(doGo(ctx, -1)).toBe("/login/");
 
     expect(Array.from(ctx.getRetainedPathnames()).sort()).toEqual([
       "/login/",
@@ -495,12 +579,12 @@ describe("Context History (Chunk D tab/reset/snapshot/output)", () => {
     ctx.push("/tabs/feed/");
     ctx.push("/tabs/feed/page2/");
     ctx.push("/login/");
-    ctx.go(-1);
+    doGo(ctx, -1);
 
     ctx.handleSetCurrentTab("feed", "/tabs/feed/");
     expect(ctx.currentEntry()?.pathname).toBe("/tabs/feed/page2/");
     expect(ctx.currentEntry()?.context).toBe("feed");
-    expect(ctx.performBack()).toBe("/tabs/feed/");
+    expect(doBack(ctx)).toBe("/tabs/feed/");
 
     const before = JSON.stringify(ctx.snapshot());
     ctx.handleSetCurrentTab("feed", "/tabs/feed/");
@@ -595,7 +679,7 @@ describe("Context History (Chunk E prepared navigation plans)", () => {
     ctx.push("/a");
     ctx.push("/b");
     ctx.push("/c");
-    ctx.performBack(); // cursor 2 → 1
+    doBack(ctx); // cursor 2 → 1
 
     const plan = ctx.prepareForward();
     expect(plan).not.toBeNull();
@@ -731,5 +815,77 @@ describe("Context History (Chunk E prepared navigation plans)", () => {
     // Tab context should be cleared
     const snap = ctx.snapshot();
     expect(snap.contexts.feed?.entries.length ?? 0).toBe(0);
+  });
+
+  it("abandoned plan (prepare without commit) leaves state unchanged", () => {
+    const ctx = createContextHistory();
+    ctx.push("/a");
+    ctx.push("/b");
+
+    // Prepare a back plan but never commit it
+    const plan = ctx.prepareBack();
+    expect(plan).not.toBeNull();
+    expect(plan!.target).toBe("/a");
+
+    // State unchanged
+    expect(ctx.currentEntry()?.pathname).toBe("/b");
+    expect(ctx.canGoBack(1)).toBe(true);
+
+    // Subsequent operations still work correctly
+    ctx.push("/c");
+    expect(ctx.currentEntry()?.pathname).toBe("/c");
+
+    // A new prepare+commit works correctly
+    const plan2 = ctx.prepareBack();
+    expect(plan2).not.toBeNull();
+    plan2!.commit({ pathname: "/b", search: "" });
+    expect(ctx.currentEntry()?.pathname).toBe("/b");
+  });
+
+  it("double commit is a no-op via generation counter", () => {
+    const ctx = createContextHistory();
+    ctx.push("/a");
+    ctx.push("/b");
+    ctx.push("/c");
+
+    const plan = ctx.prepareBack();
+    expect(plan).not.toBeNull();
+
+    // First commit succeeds
+    const entry1 = plan!.commit({ pathname: "/b", search: "" });
+    expect(entry1.pathname).toBe("/b");
+    expect(ctx.currentEntry()?.pathname).toBe("/b");
+
+    // Second commit is a no-op — returns current entry without mutation
+    const entry2 = plan!.commit({ pathname: "/b", search: "" });
+    expect(entry2.pathname).toBe("/b");
+    expect(ctx.currentEntry()?.pathname).toBe("/b");
+
+    // State is still consistent — forward should work
+    expect(doForward(ctx)).toBe("/c");
+  });
+
+  it("stale plan commit is a no-op when a newer plan exists", () => {
+    const ctx = createContextHistory();
+    ctx.push("/a");
+    ctx.push("/b");
+    ctx.push("/c");
+
+    const oldPlan = ctx.prepareBack();
+    expect(oldPlan).not.toBeNull();
+
+    // Prepare a newer plan (bumps generation), making oldPlan stale
+    const newPlan = ctx.prepareBack();
+    expect(newPlan).not.toBeNull();
+
+    // Even committing oldPlan first is blocked — it's stale because
+    // a newer plan was prepared (gen < prepareGeneration)
+    const staleEntry = oldPlan!.commit({ pathname: "/b", search: "" });
+    expect(staleEntry.pathname).toBe("/c"); // returns current entry, no mutation
+    expect(ctx.currentEntry()?.pathname).toBe("/c"); // unchanged
+
+    // The newer plan commits successfully
+    newPlan!.commit({ pathname: "/b", search: "" });
+    expect(ctx.currentEntry()?.pathname).toBe("/b");
   });
 });
