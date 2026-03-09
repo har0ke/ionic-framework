@@ -1,5 +1,4 @@
 import type {
-  ContextConfig,
   ContextHistorySnapshot,
   ContextStack,
   CurrentRouteInfo,
@@ -13,24 +12,8 @@ import type {
 
 const DEFAULT_CONTEXT_ID = "default" as const;
 
-// Default context clears its entries when a cross-context push targets it.
-// This prevents stale routes (e.g. login pages) from accumulating when
-// the user navigates between tabs and non-tab routes. Each visit to the
-// default context starts with a fresh stack.
-const DEFAULT_CONTEXT_CONFIG: ContextConfig = {
-  clearOnExternalPush: true,
-};
-
-// Tab contexts preserve their entries on cross-context push because tab
-// stacks are long-lived: switching away from a tab and back should restore
-// the tab's last-visited page, not clear it.
-const TAB_CONTEXT_CONFIG: ContextConfig = {
-  clearOnExternalPush: false,
-};
-
 type ContextRegistration = {
   prefix: string;
-  config: ContextConfig;
 };
 
 type RouteMetadata = {
@@ -94,13 +77,11 @@ export const createContextHistory = () => {
   // The default context always exists.
   registrations.set(DEFAULT_CONTEXT_ID, {
     prefix: "",
-    config: DEFAULT_CONTEXT_CONFIG,
   });
 
   contexts.set(DEFAULT_CONTEXT_ID, {
     entries: [],
     cursor: 0,
-    config: DEFAULT_CONTEXT_CONFIG,
     rootHref: undefined,
   });
 
@@ -134,7 +115,6 @@ export const createContextHistory = () => {
     const created: ContextStack = {
       entries: [],
       cursor: 0,
-      config: registration.config,
       rootHref: undefined,
     };
 
@@ -210,10 +190,9 @@ export const createContextHistory = () => {
    * @param id     - Unique context identifier (e.g. "feed")
    * @param prefix - URL prefix for route matching (e.g. "/tabs/feed").
    *   Must not be "/" or "" — those would match every route.
-   * @param config - Context-specific configuration (e.g. clearOnExternalPush)
    * @throws If prefix is "/" or ""
    */
-  const registerContext = (id: string, prefix: string, config: ContextConfig): void => {
+  const registerContext = (id: string, prefix: string): void => {
     if (registrations.has(id)) {
       return;
     }
@@ -228,13 +207,11 @@ export const createContextHistory = () => {
 
     registrations.set(id, {
       prefix: normalized,
-      config,
     });
 
     contexts.set(id, {
       entries: [],
       cursor: 0,
-      config,
       rootHref: undefined,
     });
   };
@@ -301,12 +278,12 @@ export const createContextHistory = () => {
    * Push a new navigation entry onto the matched context's stack.
    *
    * The target context is determined by longest-prefix match against the
-   * route's pathname. If this is a cross-context push, the target context's
-   * existing entries may be cleared (depending on `clearOnExternalPush`).
-   * Forward entries beyond the cursor are always truncated before pushing.
+   * route's pathname. Cross-context pushes preserve the target context's
+   * existing entries (history is never cleared on push). Forward entries
+   * beyond the cursor are always truncated before pushing.
    *
    * @param route    - URL string (e.g. "/tabs/feed/page2?q=1") or object
-   * @param options  - Push options (routerAnimation, clearOnExternalPush override)
+   * @param options  - Push options (routerAnimation)
    * @param metadata - Additional route metadata (search, params) when
    *   route is a string and metadata comes from a separate source
    * @returns The created NavEntry
@@ -322,14 +299,6 @@ export const createContextHistory = () => {
     const previousActiveContext = activeContext;
     const isCrossContextPush = targetContext !== previousActiveContext;
     const targetStack = ensureContextStack(targetContext);
-
-    if (isCrossContextPush) {
-      const shouldClearTarget = options?.clearOnExternalPush ?? targetStack.config.clearOnExternalPush;
-      if (shouldClearTarget) {
-        targetStack.entries = [];
-        targetStack.cursor = 0;
-      }
-    }
 
     truncateForwardEntriesIfNeeded(targetStack);
 
@@ -489,11 +458,10 @@ export const createContextHistory = () => {
    * Switch to a tab context, restoring its last-visited entry or creating
    * one from `defaultHref` if the tab's stack is empty.
    *
-   * Tab switch does NOT trigger `clearOnExternalPush` — tab stacks are
-   * long-lived and should preserve their history across tab switches.
-   * The synthesized entry (for empty tabs) has `originContext: null`
-   * because there is no meaningful "source" for a tab's initial default
-   * route — it was not pushed from another context.
+   * Tab switch preserves the target context's existing entries — history
+   * is never cleared on switch. The synthesized entry (for empty tabs) has
+   * `originContext: null` because there is no meaningful "source" for a
+   * tab's initial default route — it was not pushed from another context.
    *
    * Delegates to `prepareChangeTab().commit()` so that registration and
    * stack logic are centralized. This is the direct-mutation API — the
@@ -781,7 +749,7 @@ export const createContextHistory = () => {
     }
 
     const prefix = normalizePrefix(href.split("?", 1)[0]);
-    registerContext(tab, prefix, TAB_CONTEXT_CONFIG);
+    registerContext(tab, prefix);
     migrateDefaultEntriesToTab(tab);
   };
 

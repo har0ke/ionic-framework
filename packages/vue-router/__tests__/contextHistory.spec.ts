@@ -1,9 +1,5 @@
 import { createContextHistory } from "../src/contextHistory";
-import type { ContextConfig, PreparedPlan } from "../src/types";
-
-const tabConfig: ContextConfig = {
-  clearOnExternalPush: false,
-};
+import type { PreparedPlan } from "../src/types";
 
 /**
  * Helpers that mirror the old immediate APIs via prepare+commit.
@@ -35,7 +31,7 @@ describe("Context History (registry + matching)", () => {
 
   it("registers a single tab prefix and matches exact + nested (trailing slash normalized)", () => {
     const ctx = createContextHistory();
-    ctx.registerContext("feed", "/tabs/feed/", tabConfig);
+    ctx.registerContext("feed", "/tabs/feed/");
 
     expect(ctx.matchContext("/tabs/feed")).toEqual("feed");
     expect(ctx.matchContext("/tabs/feed/1")).toEqual("feed");
@@ -43,7 +39,7 @@ describe("Context History (registry + matching)", () => {
 
   it("registers a single tab prefix and matches exact + nested (no trailing slash)", () => {
     const ctx = createContextHistory();
-    ctx.registerContext("feed", "/tabs/feed", tabConfig);
+    ctx.registerContext("feed", "/tabs/feed");
 
     expect(ctx.matchContext("/tabs/feed")).toEqual("feed");
     expect(ctx.matchContext("/tabs/feed/1")).toEqual("feed");
@@ -51,8 +47,8 @@ describe("Context History (registry + matching)", () => {
 
   it("chooses the longest matching prefix when multiple contexts overlap", () => {
     const ctx = createContextHistory();
-    ctx.registerContext("feed", "/tabs/feed", tabConfig);
-    ctx.registerContext("feed-settings", "/tabs/feed/settings", tabConfig);
+    ctx.registerContext("feed", "/tabs/feed");
+    ctx.registerContext("feed-settings", "/tabs/feed/settings");
 
     expect(ctx.matchContext("/tabs/feed/123")).toEqual("feed");
     expect(ctx.matchContext("/tabs/feed/settings")).toEqual("feed-settings");
@@ -61,15 +57,15 @@ describe("Context History (registry + matching)", () => {
 
   it("boundary match: '/tabs/feed' does NOT match '/tabs/feedback'", () => {
     const ctx = createContextHistory();
-    ctx.registerContext("feed", "/tabs/feed", tabConfig);
+    ctx.registerContext("feed", "/tabs/feed");
 
     expect(ctx.matchContext("/tabs/feedback")).toEqual("default");
   });
 
   it("re-registering the same id is a no-op", () => {
     const ctx = createContextHistory();
-    ctx.registerContext("feed", "/tabs/feed", tabConfig);
-    ctx.registerContext("feed", "/other", tabConfig);
+    ctx.registerContext("feed", "/tabs/feed");
+    ctx.registerContext("feed", "/other");
 
     expect(ctx.matchContext("/tabs/feed")).toEqual("feed");
     expect(ctx.matchContext("/other")).toEqual("default");
@@ -77,7 +73,7 @@ describe("Context History (registry + matching)", () => {
 
   it("unmatched route returns default", () => {
     const ctx = createContextHistory();
-    ctx.registerContext("feed", "/tabs/feed", tabConfig);
+    ctx.registerContext("feed", "/tabs/feed");
 
     expect(ctx.matchContext("/does-not-match")).toEqual("default");
   });
@@ -95,7 +91,7 @@ describe("Context History (Chunk B stack operations)", () => {
 
   it("cross-context push switches current entry context and sets originContext", () => {
     const ctx = createContextHistory();
-    ctx.registerContext("feed", "/tabs/feed", tabConfig);
+    ctx.registerContext("feed", "/tabs/feed");
 
     ctx.push("/login/");
     ctx.push("/tabs/feed/");
@@ -105,10 +101,10 @@ describe("Context History (Chunk B stack operations)", () => {
     expect(ctx.currentEntry()?.originContext).toEqual("default");
   });
 
-  it("default context clearOnExternalPush clears its entries on cross-context push", () => {
+  it("cross-context push preserves default context entries", () => {
     const ctx = createContextHistory();
-    ctx.registerContext("feed", "/tabs/feed", tabConfig);
-    ctx.registerContext("discover", "/tabs/discover", tabConfig);
+    ctx.registerContext("feed", "/tabs/feed");
+    ctx.registerContext("discover", "/tabs/discover");
 
     ctx.push("/login/");
     ctx.push("/signup/");
@@ -118,15 +114,17 @@ describe("Context History (Chunk B stack operations)", () => {
 
     expect(ctx.currentEntry()?.pathname).toEqual("/login-new/");
     expect(ctx.currentEntry()?.context).toEqual("default");
-    // Default context, root entry '/login-new/' != fallback '/' → canGoBack(1) is true
-    // (performBack would return '/' as the fallback target)
+    // Default context entries are preserved across cross-context pushes.
+    // /login/, /signup/ still exist + /login-new/ at cursor.
+    // root entry '/login/' != fallback '/' → offset 1 → effectiveDepth = 3
     expect(ctx.canGoBack(1)).toBe(true);
-    expect(ctx.canGoBack(2)).toBe(false);
+    expect(ctx.canGoBack(3)).toBe(true);
+    expect(ctx.canGoBack(4)).toBe(false);
   });
 
   it("replace in same context updates pathname but keeps routerAnimation", () => {
     const ctx = createContextHistory();
-    ctx.registerContext("feed", "/tabs/feed", tabConfig);
+    ctx.registerContext("feed", "/tabs/feed");
     const customAnimation = (() => undefined) as any;
 
     ctx.push("/tabs/feed/", { routerAnimation: customAnimation });
@@ -138,8 +136,8 @@ describe("Context History (Chunk B stack operations)", () => {
 
   it("replace cross-context behaves as push into target context", () => {
     const ctx = createContextHistory();
-    ctx.registerContext("feed", "/tabs/feed", tabConfig);
-    ctx.registerContext("discover", "/tabs/discover", tabConfig);
+    ctx.registerContext("feed", "/tabs/feed");
+    ctx.registerContext("discover", "/tabs/discover");
 
     ctx.push("/tabs/feed/");
     ctx.replace("/tabs/discover/profile/");
@@ -166,7 +164,7 @@ describe("Context History (Chunk B stack operations)", () => {
 
   it("canGoBack with rootHref matching root entry does not add offset", () => {
     const ctx = createContextHistory();
-    ctx.registerContext("feed", "/tabs/feed", tabConfig);
+    ctx.registerContext("feed", "/tabs/feed");
     ctx.handleSetCurrentTab("feed", "/tabs/feed/");
 
     ctx.push("/tabs/feed/");
@@ -214,7 +212,7 @@ describe("Context History (Chunk B stack operations)", () => {
 
   it("canGoBack with rootHref not matching root entry adds offset", () => {
     const ctx = createContextHistory();
-    ctx.registerContext("feed", "/tabs/feed", tabConfig);
+    ctx.registerContext("feed", "/tabs/feed");
     ctx.handleSetCurrentTab("feed", "/tabs/feed/");
 
     ctx.push("/tabs/feed/deep/");
@@ -238,7 +236,7 @@ describe("Context History (Chunk B stack operations)", () => {
 describe("Context History (Chunk C navigation algorithms)", () => {
   it("back decrements cursor within context", () => {
     const ctx = createContextHistory();
-    ctx.registerContext("feed", "/tabs/feed", tabConfig);
+    ctx.registerContext("feed", "/tabs/feed");
 
     ctx.push("/tabs/feed/");
     ctx.push("/tabs/feed/details/");
@@ -249,7 +247,7 @@ describe("Context History (Chunk C navigation algorithms)", () => {
 
   it("back at cursor 0 with rootHref matching current entry blocks", () => {
     const ctx = createContextHistory();
-    ctx.registerContext("feed", "/tabs/feed", tabConfig);
+    ctx.registerContext("feed", "/tabs/feed");
     ctx.handleSetCurrentTab("feed", "/tabs/feed/");
 
     ctx.push("/tabs/feed/");
@@ -261,7 +259,7 @@ describe("Context History (Chunk C navigation algorithms)", () => {
 
   it("back at cursor 0 falls back to rootHref for deep-linked tab page", () => {
     const ctx = createContextHistory();
-    ctx.registerContext("feed", "/tabs/feed", tabConfig);
+    ctx.registerContext("feed", "/tabs/feed");
     ctx.handleSetCurrentTab("feed", "/tabs/feed/");
 
     ctx.push("/tabs/feed/deep/");
@@ -272,7 +270,7 @@ describe("Context History (Chunk C navigation algorithms)", () => {
 
   it("back tab context ignores passed defaultHref (rootHref wins)", () => {
     const ctx = createContextHistory();
-    ctx.registerContext("feed", "/tabs/feed", tabConfig);
+    ctx.registerContext("feed", "/tabs/feed");
     ctx.handleSetCurrentTab("feed", "/tabs/feed/");
 
     ctx.push("/tabs/feed/deep/");
@@ -334,7 +332,7 @@ describe("Context History (Chunk C navigation algorithms)", () => {
 
   it("go(-1) and go(-N) move back with partial completion semantics", () => {
     const ctx = createContextHistory();
-    ctx.registerContext("feed", "/tabs/feed", tabConfig);
+    ctx.registerContext("feed", "/tabs/feed");
     ctx.handleSetCurrentTab("feed", "/tabs/feed/");
 
     ctx.push("/tabs/feed/");
@@ -349,7 +347,7 @@ describe("Context History (Chunk C navigation algorithms)", () => {
 
   it("go(-N) returns null with no mutation when first step is blocked", () => {
     const ctx = createContextHistory();
-    ctx.registerContext("feed", "/tabs/feed", tabConfig);
+    ctx.registerContext("feed", "/tabs/feed");
     ctx.handleSetCurrentTab("feed", "/tabs/feed/");
 
     ctx.push("/tabs/feed/");
@@ -386,7 +384,7 @@ describe("Context History (Chunk C navigation algorithms)", () => {
 describe("Context History (Chunk D tab/reset/snapshot/output)", () => {
   it("changeTab synthesizes first entry for empty context and resumes existing stacks", () => {
     const ctx = createContextHistory();
-    ctx.registerContext("feed", "/tabs/feed", tabConfig);
+    ctx.registerContext("feed", "/tabs/feed");
     // Set rootHref so tab root back is terminal
     ctx.handleSetCurrentTab("feed", "/tabs/feed/");
 
@@ -404,8 +402,8 @@ describe("Context History (Chunk D tab/reset/snapshot/output)", () => {
 
   it("tab round-trip: tabA -> tabB -> tabA preserves cursor positions", () => {
     const ctx = createContextHistory();
-    ctx.registerContext("tabA", "/tabs/tabA", tabConfig);
-    ctx.registerContext("tabB", "/tabs/tabB", tabConfig);
+    ctx.registerContext("tabA", "/tabs/tabA");
+    ctx.registerContext("tabB", "/tabs/tabB");
     ctx.handleSetCurrentTab("tabA", "/tabs/tabA/");
     ctx.handleSetCurrentTab("tabB", "/tabs/tabB/");
 
@@ -432,7 +430,7 @@ describe("Context History (Chunk D tab/reset/snapshot/output)", () => {
 
   it("resetTab resets active and inactive tabs and clears surviving root originContext", () => {
     const ctx = createContextHistory();
-    ctx.registerContext("feed", "/tabs/feed", tabConfig);
+    ctx.registerContext("feed", "/tabs/feed");
     ctx.handleSetCurrentTab("feed", "/tabs/feed/");
 
     ctx.push("/login/");
@@ -452,7 +450,7 @@ describe("Context History (Chunk D tab/reset/snapshot/output)", () => {
 
   it("resetAll clears stacks and creates a fresh entry in matched target context", () => {
     const ctx = createContextHistory();
-    ctx.registerContext("feed", "/tabs/feed", tabConfig);
+    ctx.registerContext("feed", "/tabs/feed");
     ctx.handleSetCurrentTab("feed", "/tabs/feed/");
 
     ctx.push("/tabs/feed/");
@@ -471,7 +469,7 @@ describe("Context History (Chunk D tab/reset/snapshot/output)", () => {
 
   it("getRetainedPathnames returns entries up to cursor across all contexts", () => {
     const ctx = createContextHistory();
-    ctx.registerContext("feed", "/tabs/feed", tabConfig);
+    ctx.registerContext("feed", "/tabs/feed");
 
     ctx.push("/tabs/feed/");
     ctx.push("/tabs/feed/page2/");
@@ -489,7 +487,7 @@ describe("Context History (Chunk D tab/reset/snapshot/output)", () => {
 
   it("derivePushedByRoute returns previous entry, implicit default, or undefined", () => {
     const ctx = createContextHistory();
-    ctx.registerContext("feed", "/tabs/feed", tabConfig);
+    ctx.registerContext("feed", "/tabs/feed");
 
     // Default context at cursor 0: root entry '/a/' !== implicit default '/'
     // → derivePushedByRoute returns '/' (the implicit default)
@@ -593,7 +591,7 @@ describe("Context History (Chunk D tab/reset/snapshot/output)", () => {
 
   it("snapshot returns expected structure and backTarget links", () => {
     const ctx = createContextHistory();
-    ctx.registerContext("feed", "/tabs/feed", tabConfig);
+    ctx.registerContext("feed", "/tabs/feed");
 
     ctx.push("/tabs/feed/");
     ctx.push("/tabs/feed/page2/");
@@ -661,7 +659,7 @@ describe("Context History (Chunk E prepared navigation plans)", () => {
 
   it("prepareBack with tab rootHref fallback", () => {
     const ctx = createContextHistory();
-    ctx.registerContext("feed", "/tabs/feed", tabConfig);
+    ctx.registerContext("feed", "/tabs/feed");
     ctx.push("/tabs/feed/detail");
     ctx.handleSetCurrentTab("feed", "/tabs/feed");
 
@@ -756,7 +754,7 @@ describe("Context History (Chunk E prepared navigation plans)", () => {
 
   it("prepareChangeTab returns existing tab entry if tab has history", () => {
     const ctx = createContextHistory();
-    ctx.registerContext("feed", "/tabs/feed", tabConfig);
+    ctx.registerContext("feed", "/tabs/feed");
     ctx.push("/tabs/feed");
     ctx.push("/tabs/feed/detail");
     ctx.push("/other");
@@ -768,7 +766,7 @@ describe("Context History (Chunk E prepared navigation plans)", () => {
 
   it("prepareResetTab returns plan for active tab, null for inactive", () => {
     const ctx = createContextHistory();
-    ctx.registerContext("feed", "/tabs/feed", tabConfig);
+    ctx.registerContext("feed", "/tabs/feed");
     ctx.push("/tabs/feed");
     ctx.push("/tabs/feed/page2");
 
@@ -792,7 +790,7 @@ describe("Context History (Chunk E prepared navigation plans)", () => {
 
   it("prepareResetAll returns a plan that clears all stacks", () => {
     const ctx = createContextHistory();
-    ctx.registerContext("feed", "/tabs/feed", tabConfig);
+    ctx.registerContext("feed", "/tabs/feed");
     ctx.push("/tabs/feed");
     ctx.push("/tabs/feed/page2");
     ctx.push("/other");

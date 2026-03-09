@@ -101,14 +101,7 @@ export interface NavigationInformation {
  * to compile while the rewrite is developed in parallel.
  */
 
-export interface ContextConfig {
-  clearOnExternalPush: boolean;
-}
-
 export interface PushOptions {
-  // Push-time overrides (consumed, not stored)
-  clearOnExternalPush?: boolean;
-
   // Navigation metadata
   routerAnimation?: AnimationBuilder;
 }
@@ -129,7 +122,6 @@ export interface NavEntry {
 export interface ContextStack {
   entries: NavEntry[];
   cursor: number;
-  config: ContextConfig;
   /**
    * The explicit root route for this context, sourced from IonTabButton.href.
    * Used as the fallback target when back reaches cursor 0. Only set for
