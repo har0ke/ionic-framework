@@ -406,7 +406,7 @@ export const createIonRouter = (
       const routePayload = {
         pathname: to.path,
         search: getSearchFromFullPath(to.fullPath),
-        params: to.params,
+        params: to.params as Record<string, any>,
       };
 
       const entering =
@@ -579,11 +579,8 @@ export const createIonRouter = (
    * Falls back to `currentRouteInfo` if no leaving info has been set yet
    * (i.e. before the first navigation completes).
    *
-   * Behavioral change from the old code: the old implementation did a
-   * live lookup into locationHistory with a position-math fallback that
-   * could diverge after clearHistory or index edge cases. This version
-   * uses a cached value, which is simpler and always reflects the state
-   * at the time CurrentRouteInfo was last produced.
+   * Uses a cached value set when `CurrentRouteInfo` is produced, which is
+   * simpler than a live lookup and always reflects navigation-time state.
    */
   const getLeavingRouteInfo = (): RouteInfo | undefined =>
     leavingRouteInfo ?? currentRouteInfo;

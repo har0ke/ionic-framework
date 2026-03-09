@@ -265,6 +265,14 @@ export const IonRouterOutlet = /*@__PURE__*/ defineComponent({
       return result;
     };
 
+    /**
+     * Sync viewStacks mount state with contextHistory's retained set.
+     *
+     * A view is mounted if and only if its pathname is in the retained
+     * pathnames set (entries at or before the cursor in any context).
+     * This is the bridge between the navigation model (contextHistory)
+     * and the DOM view layer (viewStacks).
+     */
     const reconcileMountedViews = () => {
       const retainedPathnames: Set<string> = ionRouter.getRetainedPathnames();
       const viewStack = viewStacks.getViewStack(id) ?? [];

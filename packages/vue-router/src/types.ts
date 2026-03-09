@@ -44,16 +44,10 @@ export interface RouteInfo {
    */
   pushedByRoute?: string;
   tab?: string;
+  /** @deprecated Always undefined in the context-history system. Will be removed. */
   position?: number;
+  /** @deprecated Always undefined in the context-history system. Will be removed. */
   delta?: number;
-}
-
-export interface RouteParams {
-  routerAction: RouteAction;
-  routerDirection: RouteDirection;
-  routerAnimation?: AnimationBuilder;
-  tab?: string;
-  id?: string;
 }
 
 export type RouteAction = "push" | "pop" | "replace";
@@ -85,12 +79,6 @@ export interface ExternalNavigationOptions {
   routerDirection?: RouteDirection;
   routerAnimation?: AnimationBuilder;
   routerAction?: RouteAction;
-}
-
-export interface NavigationInformation {
-  action?: RouteAction;
-  direction?: RouteDirection;
-  delta?: number;
 }
 
 /**
@@ -130,12 +118,24 @@ export interface ContextStack {
   rootHref: string | undefined;
 }
 
-export interface NavigationContext {
+/**
+ * Transition metadata for a single navigation (direction and animation).
+ *
+ * Not related to context-history "contexts" (tabs/default). This is a
+ * per-navigation hint struct passed to `produceCurrentRouteInfo`.
+ */
+export interface TransitionHint {
   animation?: AnimationBuilder;
   direction?: RouteDirection;
 }
 
-// Placeholder for now; kept separate from legacy RouteInfo.
+/**
+ * Route info produced by `produceCurrentRouteInfo` after each navigation.
+ *
+ * Consumed by IonRouterOutlet (transition logic) and IonTabBar (active tab
+ * detection). Kept separate from the legacy `RouteInfo` interface — all
+ * fields here are always defined (no optionality ambiguity).
+ */
 export interface CurrentRouteInfo {
   id: string;
   pathname: string;

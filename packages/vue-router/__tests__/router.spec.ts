@@ -10,6 +10,7 @@ type MockRoute = {
   params: Record<string, any>;
 };
 
+/** Build a mock Vue Router resolved route from a URL string. Hash is stripped from path. */
 const createRoute = (url: string): MockRoute => {
   const [pathWithSearchAndHash] = url.split("#", 1);
   const [path] = pathWithSearchAndHash.split("?", 1);
@@ -21,6 +22,23 @@ const createRoute = (url: string): MockRoute => {
   };
 };
 
+/**
+ * Create a test harness that mocks Vue Router and wires up createIonRouter.
+ *
+ * Simulates the Vue Router lifecycle (beforeEach guard, afterEach hook,
+ * popstate listener) without a real DOM or history API. Key methods:
+ *
+ * - `commitNavigation(url, opts?)` — simulate a full beforeEach+afterEach
+ *   cycle. Updates `router.currentRoute` and `history.state.replaced` on
+ *   success. With `failureType`, fires afterEach with a failure without
+ *   updating currentRoute.
+ * - `emitBrowserDelta(delta)` — simulate a browser popstate event by
+ *   calling the `opts.history.listen` callback with the given delta.
+ * - `runBeforeEachOnly(url)` — run only the beforeEach guard and return
+ *   the `next()` argument (false = intercepted, undefined = passed).
+ * - `runAfterEachOnly(to, from, failure?)` — run afterEach in isolation
+ *   without updating router state (useful for failure scenarios).
+ */
 const createRouterHarness = (initialPath = "/") => {
   let beforeEachGuard:
     | ((to: any, from: any, next: (value?: any) => void) => void)

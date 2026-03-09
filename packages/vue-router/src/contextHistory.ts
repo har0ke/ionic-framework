@@ -3,7 +3,7 @@ import type {
   ContextStack,
   CurrentRouteInfo,
   NavEntry,
-  NavigationContext,
+  TransitionHint,
   PreparedPlan,
   PushOptions,
   RouteAction,
@@ -49,12 +49,8 @@ type RouteInput = string | (RouteMetadata & { pathname: string });
  *   invalidated the forward chain).
  *
  * - **Context matching uses longest registered prefix.** If nothing matches,
- *   the default context receives the route. There is no `unmatchedBehavior`
- *   configuration — routes always go to the context with the longest
- *   matching prefix, or the default context.
- *
- * Context matching uses longest registered prefix; unmatched routes always
- * go to the default context.
+ *   the default context receives the route. Routes always go to the context
+ *   with the longest matching prefix, or the default context.
  */
 export const createContextHistory = () => {
   const registrations = new Map<string, ContextRegistration>();
@@ -85,6 +81,7 @@ export const createContextHistory = () => {
     rootHref: undefined,
   });
 
+  /** Strip trailing slash from a prefix (unless it is just "/"). */
   const normalizePrefix = (prefix: string): string => {
     if (prefix.length > 1 && prefix.endsWith("/")) {
       return prefix.slice(0, -1);
@@ -93,6 +90,7 @@ export const createContextHistory = () => {
     return prefix;
   };
 
+  /** Check whether `pathname` starts with `prefix` (exact match or slash boundary). */
   const prefixMatches = (pathname: string, prefix: string): boolean => {
     if (prefix === "") {
       return false;
@@ -101,6 +99,7 @@ export const createContextHistory = () => {
     return pathname === prefix || pathname.startsWith(prefix + "/");
   };
 
+  /** Get the ContextStack for `id`, creating it if a registration exists. Throws for unknown IDs. */
   const ensureContextStack = (id: string): ContextStack => {
     const existing = contexts.get(id);
     if (existing) {
@@ -122,6 +121,7 @@ export const createContextHistory = () => {
     return created;
   };
 
+  /** Normalize a RouteInput (string URL or object) into { pathname, search, params }. */
   const parseRouteInput = (route: RouteInput, metadata?: RouteMetadata): RouteMetadata & { pathname: string; search: string } => {
     const normalizeSearch = (search?: string): string => {
       if (!search) {
@@ -149,6 +149,7 @@ export const createContextHistory = () => {
     };
   };
 
+  /** Build a new NavEntry with a unique ID for the given context and route. */
   const createNavEntry = (
     context: string,
     route: ReturnType<typeof parseRouteInput>,
@@ -261,6 +262,7 @@ export const createContextHistory = () => {
   /** Build a full path string (pathname + optional query) from a NavEntry. */
   const entryToPath = (entry: NavEntry): string => (entry.search ? `${entry.pathname}?${entry.search}` : entry.pathname);
 
+  /** Map a RouteDirection to a default RouteAction ("back"->"pop", "root"->"replace", others->"push"). */
   const mapActionFromDirection = (direction: RouteDirection): RouteAction => {
     switch (direction) {
       case "back":
@@ -422,9 +424,7 @@ export const createContextHistory = () => {
    * This precedence ensures that browser back, hardware back, and
    * swipe-back all share the same fallback rules regardless of entry point.
    *
-   * @returns The default target pathname, or undefined if in a tab context
-   *   with no rootHref (shouldn't happen in normal operation but handled
-   *   defensively).
+   * @returns The default target pathname (always a string: rootHref, defaultHref, or "/").
    */
   const getEffectiveDefault = (defaultHref?: string): string => {
     const stack = ensureContextStack(activeContext);
@@ -652,12 +652,12 @@ export const createContextHistory = () => {
    *
    * @param entering - The NavEntry being navigated to
    * @param leaving  - The current route info being navigated away from
-   * @param navCtx   - Direction, animation, and optional action override
+   * @param navCtx   - Transition hint with direction, animation, and optional action override
    */
   const produceCurrentRouteInfo = (
     entering: NavEntry,
     leaving: CurrentRouteInfo | undefined,
-    navCtx: NavigationContext & { action?: RouteAction }
+    navCtx: TransitionHint & { action?: RouteAction }
   ): CurrentRouteInfo => {
     const direction = navCtx.direction ?? "forward";
     const action = navCtx.action ?? mapActionFromDirection(direction);
@@ -743,6 +743,7 @@ export const createContextHistory = () => {
     }
   };
 
+  /** Register a tab if not yet known, deriving its prefix from `href`, then migrate matching default entries. */
   const ensureTabRegistration = (tab: string, href: string): void => {
     if (registrations.has(tab)) {
       return;
@@ -774,11 +775,15 @@ export const createContextHistory = () => {
   // ─── Prepared (non-mutating) navigation methods ────────────────────
 
   /**
-   * Helper to build a commit function that replaces the entry at the active
+   * Helper to build a commit function that replaces the entry at the given
    * context's current cursor position using the resolved route payload.
    *
    * Used by fallback-to-default scenarios where back/go resolves to a
    * synthetic default target rather than an existing entry.
+   *
+   * @param contextId  - The context to operate on (captured at prepare time)
+   * @param animation  - Animation override to store on the created NavEntry
+   * @param generation - The prepare-generation counter for staleness protection
    */
   const buildReplaceCommit = (
     contextId: string,
@@ -786,7 +791,7 @@ export const createContextHistory = () => {
     generation: number
   ): PreparedPlan["commit"] => {
     return (resolved) => {
-      if (generation <= lastCommittedGeneration) {
+      if (generation < prepareGeneration || generation <= lastCommittedGeneration) {
         const s = ensureContextStack(contextId);
         return s.entries[s.cursor] ?? createNavEntry(contextId, parseRouteInput(resolved), { originContext: null, routerAnimation: animation });
       }
@@ -820,7 +825,11 @@ export const createContextHistory = () => {
    * `routerDirection='back'`, which retained the leaving page while
    * running a destructive back transition on it.
    *
-   * Returns null if back is blocked (already at the effective default).
+   * Returns null if back is blocked (already at the effective default target
+   * or the active context has no entries).
+   *
+   * @param defaultHref - Fallback target for non-tab contexts (default: "/")
+   * @param animation   - Animation override for the transition
    */
   const prepareBack = (defaultHref?: string, animation?: PreparedPlan["animation"]): PreparedPlan | null => {
     const stack = ensureContextStack(activeContext);
@@ -880,7 +889,10 @@ export const createContextHistory = () => {
   /**
    * Prepare a forward navigation plan without mutating state.
    *
-   * Returns null if forward is blocked.
+   * Returns null if forward is blocked (cursor already at top of stack
+   * or stack is empty).
+   *
+   * @param animation - Animation override for the transition
    */
   const prepareForward = (animation?: PreparedPlan["animation"]): PreparedPlan | null => {
     const stack = ensureContextStack(activeContext);
@@ -919,7 +931,7 @@ export const createContextHistory = () => {
   /**
    * Prepare a multi-step traversal plan without mutating state.
    *
-   * `go(delta)` is a thin repeated-step wrapper with no special fallback
+   * `prepareGo(delta)` is a thin repeated-step wrapper with no special fallback
    * semantics of its own: negative deltas simulate repeated back steps,
    * positive deltas simulate repeated forward steps. Stops at the first
    * blocked step. If blocked on the very first step, returns null.
@@ -932,6 +944,10 @@ export const createContextHistory = () => {
    *
    * Simulates the steps to find the final target, then the commit function
    * replays the actual mutations.
+   *
+   * @param delta       - Number of steps (negative = back, positive = forward)
+   * @param defaultHref - Fallback target for the cursor-0 back step
+   * @param animation   - Animation override for the transition
    */
   const prepareGo = (delta: number, defaultHref?: string, animation?: PreparedPlan["animation"]): PreparedPlan | null => {
     const normalizedDelta = Math.trunc(delta);
@@ -1059,10 +1075,13 @@ export const createContextHistory = () => {
    * patterns (iOS/Android) where tab switches are not part of the back
    * stack. Over many tab switches, the browser history accumulates entries
    * that all map to blocked back operations — this is accepted because
-   * browser history is not a source of truth (design principle #6).
+   * browser history is not a source of truth (design principle #2 above).
    *
    * Returns a plan whose commit switches the active context and
    * potentially synthesizes a first entry for an empty tab.
+   *
+   * @param tab         - Tab context identifier
+   * @param defaultHref - Fallback URL if the tab has no history
    */
   const prepareChangeTab = (tab: string, defaultHref: string): PreparedPlan => {
     // Note: ensureTabRegistration is a setup side-effect (idempotent),
@@ -1108,7 +1127,11 @@ export const createContextHistory = () => {
   /**
    * Prepare a tab reset plan without mutating state.
    *
-   * Returns null if the tab is not the active context (no navigation needed).
+   * Returns null if the tab is not the active context (no navigation needed)
+   * or if the tab stack is empty and no `defaultHref` is provided.
+   *
+   * @param tab         - Tab context identifier
+   * @param defaultHref - Expected root URL for the tab
    */
   const prepareResetTab = (tab: string, defaultHref?: string): PreparedPlan | null => {
     const targetStack = ensureContextStack(tab);
@@ -1171,6 +1194,8 @@ export const createContextHistory = () => {
    * Prepare a full reset plan without mutating state.
    *
    * Always returns a plan (resetAll always succeeds).
+   *
+   * @param redirectTo - URL to navigate to after clearing all history
    */
   const prepareResetAll = (redirectTo: string): PreparedPlan => {
     const gen = ++prepareGeneration;
@@ -1212,8 +1237,8 @@ export const createContextHistory = () => {
   /**
    * Produce a read-only snapshot of the complete navigational model state.
    *
-   * Each entry's backTarget is purely cursor-based: cursor > 0 → previous
-   * entry in the same context, cursor === 0 → null (blocked).
+   * Each entry's backTarget is purely index-based: index > 0 → previous
+   * entry in the same context, index === 0 → null (blocked).
    */
   const snapshot = (): ContextHistorySnapshot => {
     const contextSnapshots: ContextHistorySnapshot["contexts"] = {};

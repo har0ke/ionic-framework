@@ -194,7 +194,12 @@ describe('useIonRouter', () => {
     // Animation should still be called even though this is a replace operation
     expect(animFn).toHaveBeenCalled();
 
-    expect(vm.ionRouter.canGoBack()).toEqual(false);
+    // After replacing '/' with '/page2', canGoBack() returns true because
+    // contextHistory's effective default is '/' and the current root entry
+    // '/page2' differs from it — so a back step would navigate to '/'.
+    // (The old locationHistory returned false here because it only tracked
+    // browser history stack depth, not the fallback-to-default semantic.)
+    expect(vm.ionRouter.canGoBack()).toEqual(true);
   })
 
   it('should correctly navigate', async () => {

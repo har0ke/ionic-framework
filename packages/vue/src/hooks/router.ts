@@ -12,6 +12,7 @@ export interface UseIonRouterResult {
    * not have a hard dependency on vue-router, so we just use 'any'.
    */
   canGoBack: (deep?: number) => boolean;
+  canGoForward: (deep?: number) => boolean;
   push: (location: any, routerAnimation?: AnimationBuilder) => void;
   replace: (location: any, routerAnimation?: AnimationBuilder) => void;
   back: (routerAnimation?: AnimationBuilder) => void;
@@ -29,7 +30,7 @@ export interface UseIonRouterResult {
  * while controlling the animation.
  */
 export const useIonRouter = (): UseIonRouterResult => {
-  const { canGoBack, goBack, goForward, handleNavigate } = inject(
+  const { canGoBack, canGoForward, goBack, goForward, handleNavigate } = inject(
     "navManager"
   ) as any;
 
@@ -43,6 +44,7 @@ export const useIonRouter = (): UseIonRouterResult => {
   const push = (location: any, routerAnimation?: AnimationBuilder) =>
     navigate(location, "forward", "push", routerAnimation);
 
+  /** Replace the current entry without a transition animation. */
   const replace = (location: any, routerAnimation?: AnimationBuilder) =>
     navigate(location, "none", "replace", routerAnimation);
 
@@ -53,6 +55,7 @@ export const useIonRouter = (): UseIonRouterResult => {
 
   return {
     canGoBack,
+    canGoForward,
     push,
     replace,
     back,

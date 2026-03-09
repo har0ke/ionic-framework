@@ -428,7 +428,7 @@ describe("Context History (Chunk D tab/reset/snapshot/output)", () => {
     expect(ctx.canGoBack(1)).toBe(true);
   });
 
-  it("resetTab resets active and inactive tabs and clears surviving root originContext", () => {
+  it("resetTab resets active tab to root and returns null for inactive tab", () => {
     const ctx = createContextHistory();
     ctx.registerContext("feed", "/tabs/feed");
     ctx.handleSetCurrentTab("feed", "/tabs/feed/");
@@ -764,16 +764,13 @@ describe("Context History (Chunk E prepared navigation plans)", () => {
     expect(plan.target).toBe("/tabs/feed/detail");
   });
 
-  it("prepareResetTab returns plan for active tab, null for inactive", () => {
+  it("prepareResetTab returns plan for active tab and commits reset to root", () => {
     const ctx = createContextHistory();
     ctx.registerContext("feed", "/tabs/feed");
     ctx.push("/tabs/feed");
     ctx.push("/tabs/feed/page2");
 
-    // feed is not active context (default is) → null
-    // Wait, push into /tabs/feed goes to feed context due to prefix match
-    // Actually it does match, so activeContext should be 'feed'
-
+    // push into /tabs/feed matches feed context, so activeContext is 'feed'
     const plan = ctx.prepareResetTab("feed", "/tabs/feed");
     expect(plan).not.toBeNull();
     expect(plan!.transport).toBe("replace");
