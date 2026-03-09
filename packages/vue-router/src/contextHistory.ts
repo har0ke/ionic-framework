@@ -13,10 +13,17 @@ import type {
 
 const DEFAULT_CONTEXT_ID = "default" as const;
 
+// Default context clears its entries when a cross-context push targets it.
+// This prevents stale routes (e.g. login pages) from accumulating when
+// the user navigates between tabs and non-tab routes. Each visit to the
+// default context starts with a fresh stack.
 const DEFAULT_CONTEXT_CONFIG: ContextConfig = {
   clearOnExternalPush: true,
 };
 
+// Tab contexts preserve their entries on cross-context push because tab
+// stacks are long-lived: switching away from a tab and back should restore
+// the tab's last-visited page, not clear it.
 const TAB_CONTEXT_CONFIG: ContextConfig = {
   clearOnExternalPush: false,
 };
@@ -35,6 +42,33 @@ type RouteInput = string | (RouteMetadata & { pathname: string });
 
 /**
  * Creates a context-history manager with named navigation context stacks.
+ *
+ * Design rationale (from design doc amendment):
+ *
+ * - **Cursor-based, not destroy-on-pop.** Entries are preserved when
+ *   navigating back. The cursor moves within the stack, enabling
+ *   within-context forward navigation without entry re-creation.
+ *
+ * - **Browser history is not a source of truth.** All browser back/forward
+ *   is intercepted and translated to context-local stack operations. Browser
+ *   history diverges from internal state and that is accepted.
+ *
+ * - **No cross-context back.** `originContext` is stored as inert historical
+ *   metadata but does not drive back behavior. This eliminates the complexity
+ *   of simulating cross-context back chains in `canGoBack()` and
+ *   `derivePushedByRoute()`. The concrete UX value of cross-context back
+ *   was low compared to the maintenance cost.
+ *
+ * - **No cross-context forward.** Forward navigation only works within the
+ *   active context's entry stack. Cross-context forward has inherent UX
+ *   problems: its availability depends on invisible state the user cannot
+ *   predict (whether intervening navigations in other contexts have
+ *   invalidated the forward chain).
+ *
+ * - **Context matching uses longest registered prefix.** If nothing matches,
+ *   the default context receives the route. There is no `unmatchedBehavior`
+ *   configuration — routes always go to the context with the longest
+ *   matching prefix, or the default context.
  *
  * Context matching uses longest registered prefix; unmatched routes always
  * go to the default context.
@@ -152,6 +186,9 @@ export const createContextHistory = () => {
     routerAnimation: source.routerAnimation,
   });
 
+  // Undo/redo semantics: pushing a new entry when the cursor is not at
+  // the top truncates all forward entries. This matches browser behavior
+  // and prevents ambiguous forward state after a branch.
   const truncateForwardEntriesIfNeeded = (stack: ContextStack): void => {
     if (stack.entries.length === 0) {
       stack.cursor = 0;
@@ -312,9 +349,14 @@ export const createContextHistory = () => {
    * Replace the entry at the active context's cursor with a new entry.
    *
    * If the route resolves to a different context than the active one,
-   * delegates to `push` (there is no "current entry" in the target context
-   * to replace — the metadata is preserved through the parsed route object).
-   * Also delegates to `push` if the active stack is empty.
+   * delegates to `push`. Rationale: replacing a route in context A with a
+   * route in context B doesn't have clear stack semantics — should it
+   * remove from A? Modify B? The simplest correct behavior is to treat
+   * it as entering the new context. The metadata (search, params) is
+   * already embedded in the parsed route, so it is preserved through push().
+   *
+   * Also delegates to `push` if the active stack is empty (nothing to
+   * replace in-place).
    *
    * @param route    - URL string or route object
    * @param options  - Push options (routerAnimation)
@@ -402,8 +444,14 @@ export const createContextHistory = () => {
    * Precedence:
    * 1. Tab context rootHref (from IonTabButton.href) — if present, wins.
    *    In a tab context, do NOT fall through to defaultHref or '/'.
+   *    This means tab-root back is terminal: once the tab root is reached,
+   *    back stops. Cold-start deep links inside a tab back to the tab root
+   *    even with no browser history and no explicit defaultHref.
    * 2. Caller-supplied defaultHref (from IonBackButton or handleNavigateBack).
    * 3. Fallback: '/'
+   *
+   * This precedence ensures that browser back, hardware back, and
+   * swipe-back all share the same fallback rules regardless of entry point.
    *
    * @returns The default target pathname, or undefined if in a tab context
    *   with no rootHref (shouldn't happen in normal operation but handled
@@ -440,6 +488,12 @@ export const createContextHistory = () => {
   /**
    * Switch to a tab context, restoring its last-visited entry or creating
    * one from `defaultHref` if the tab's stack is empty.
+   *
+   * Tab switch does NOT trigger `clearOnExternalPush` — tab stacks are
+   * long-lived and should preserve their history across tab switches.
+   * The synthesized entry (for empty tabs) has `originContext: null`
+   * because there is no meaningful "source" for a tab's initial default
+   * route — it was not pushed from another context.
    *
    * Delegates to `prepareChangeTab().commit()` so that registration and
    * stack logic are centralized. This is the direct-mutation API — the
@@ -537,6 +591,10 @@ export const createContextHistory = () => {
    * context. These are the "retained" views that IonRouterOutlet should
    * keep in the DOM for instant restore on back navigation.
    *
+   * Includes entries across ALL contexts (active and inactive), so
+   * inactive tab contexts' views stay mounted — this is how tab
+   * preservation works (hidden tabs remain in DOM for instant restore).
+   *
    * Entries beyond the cursor (forward history) are excluded — those
    * views can be destroyed and will be re-created if the user goes forward.
    */
@@ -563,10 +621,23 @@ export const createContextHistory = () => {
    * back is blocked. This controls swipe-back availability and the
    * back button visibility (!!pushedByRoute === showGoBack).
    *
+   * Why derived, not stored: the origin context's cursor may change after
+   * the entry was created (e.g. `resetTab` on an inactive tab). A stored
+   * snapshot would become stale. The dynamic lookup reflects the actual
+   * current state — if you go back, you land at the current cursor
+   * position, so `pushedByRoute` should reflect that position.
+   *
    * Uses implicit defaults only (rootHref if present, else '/'):
    * - cursor > 0 → previous entry pathname
    * - cursor === 0 → implicit default target, unless the root entry
    *   already matches it (in which case back is blocked → undefined)
+   *
+   * Note: `CurrentRouteInfo.pushedByRoute` reflects the implicit back
+   * contract, not a caller-specific `defaultHref`. This is an accepted
+   * inconsistency: `IonBackButton` with an explicit `defaultHref` may
+   * navigate somewhere different in non-tab contexts, but generic UI
+   * (swipe-back, `.can-go-back` class) should reflect the implicit
+   * router contract.
    */
   const derivePushedByRoute = (): string | undefined => {
     const stack = ensureContextStack(activeContext);
@@ -598,7 +669,18 @@ export const createContextHistory = () => {
    * the route-info model consumed by IonRouterOutlet for transition logic.
    *
    * Animation precedence: explicit override > entering entry's animation
-   * (for forward) or leaving route's animation (for back).
+   * (for forward) or leaving route's animation (for back). Back uses the
+   * leaving entry's animation because that animation was used to push the
+   * leaving page — reversing it produces the correct back transition.
+   *
+   * `delta` is always undefined. Browser navigations are converted to
+   * programmatic single-step goBack/goForward calls — the browser's delta
+   * is consumed in beforeEach and not propagated to CurrentRouteInfo.
+   *
+   * `tab` is always the activeContext ID. IonTabBar does NOT read this
+   * field — it determines the active tab via pathname.startsWith(href)
+   * matching against registered tab buttons. The field exists for internal
+   * context tracking and for registerHistoryChangeListener callbacks.
    *
    * @param entering - The NavEntry being navigated to
    * @param leaving  - The current route info being navigated away from
@@ -628,6 +710,14 @@ export const createContextHistory = () => {
     };
   };
 
+  // App startup timing gap: the initial route is processed by afterEach
+  // before IonTabBar mounts, so it goes to the default context. When
+  // IonTabBar calls handleSetCurrentTab, matching entries are moved from
+  // the default context to the correct tab context. In practice, this
+  // moves exactly one entry (the initial route). The CurrentRouteInfo.tab
+  // field may be stale for one cycle ("default" instead of the tab name),
+  // but IonTabBar determines the active tab from pathname matching, not
+  // from the tab field, so there is no visible glitch.
   const migrateDefaultEntriesToTab = (tab: string): void => {
     const registration = registrations.get(tab);
     if (!registration) {
@@ -754,7 +844,15 @@ export const createContextHistory = () => {
   /**
    * Prepare a back navigation plan without mutating state.
    *
-   * Returns null if back is blocked.
+   * All back plans use `transport: 'replace'`. This is critical for the
+   * loop-avoidance rule: fallback-to-default must use replace semantics,
+   * never push, to prevent deep-link entry from creating a back/default
+   * ping-pong loop. The design doc amendment explicitly calls out the
+   * semantic bug where the old code used `transport='push'` paired with
+   * `routerDirection='back'`, which retained the leaving page while
+   * running a destructive back transition on it.
+   *
+   * Returns null if back is blocked (already at the effective default).
    */
   const prepareBack = (defaultHref?: string, animation?: PreparedPlan["animation"]): PreparedPlan | null => {
     const stack = ensureContextStack(activeContext);
@@ -853,10 +951,19 @@ export const createContextHistory = () => {
   /**
    * Prepare a multi-step traversal plan without mutating state.
    *
+   * `go(delta)` is a thin repeated-step wrapper with no special fallback
+   * semantics of its own: negative deltas simulate repeated back steps,
+   * positive deltas simulate repeated forward steps. Stops at the first
+   * blocked step. If blocked on the very first step, returns null.
+   * Otherwise returns the final reached target after completed steps
+   * (partial completion semantics).
+   *
+   * The fallback step (cursor 0 → default target) is terminal: the loop
+   * breaks after the fallback because there is nothing further to go
+   * back to. This prevents fallback-induced infinite loops.
+   *
    * Simulates the steps to find the final target, then the commit function
    * replays the actual mutations.
-   *
-   * Returns null if the first step would be blocked.
    */
   const prepareGo = (delta: number, defaultHref?: string, animation?: PreparedPlan["animation"]): PreparedPlan | null => {
     const normalizedDelta = Math.trunc(delta);
@@ -976,6 +1083,15 @@ export const createContextHistory = () => {
 
   /**
    * Prepare a tab change plan without mutating state.
+   *
+   * Uses `transport: 'push'` because tab switches create browser history
+   * entries via `router.push()`. Browser back from a tab root is
+   * intentionally blocked (tab contexts have cursor-0 back blocked when
+   * rootHref matches the root entry), which matches native mobile tab
+   * patterns (iOS/Android) where tab switches are not part of the back
+   * stack. Over many tab switches, the browser history accumulates entries
+   * that all map to blocked back operations — this is accepted because
+   * browser history is not a source of truth (design principle #6).
    *
    * Returns a plan whose commit switches the active context and
    * potentially synthesizes a first entry for an empty tab.

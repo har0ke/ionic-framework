@@ -596,4 +596,567 @@ describe("createIonRouter integration", () => {
     // Plan mismatch → treated as external push to /login
     expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/login");
   });
+
+  // ─── Guard redirect scenarios ──────────────────────────────────────
+  //
+  // Vue Router guard redirects (return "/other" or next("/other")) fire
+  // afterEach ONLY ONCE for the final resolved destination with
+  // failure = undefined (success). The original navigation is never
+  // seen by afterEach. The expectedComparableTarget mismatch catches
+  // this: the plan was for "/a" but we arrived at "/b", so the plan
+  // is dropped and the navigation is treated as external.
+
+  it("guard redirect on goForward drops plan and treats as external", () => {
+    const h = createRouterHarness("/");
+
+    h.nav.handleNavigate("/a", "push", "forward");
+    h.commitNavigation("/a");
+    h.nav.handleNavigate("/b", "push", "forward");
+    h.commitNavigation("/b");
+
+    // Go back, then prepare a forward plan
+    h.nav.goBack();
+    h.commitNavigation("/a", { replaced: true });
+
+    h.nav.goForward();
+    // Plan expects "/b" but guard redirects to "/c"
+    h.commitNavigation("/c");
+
+    // Plan mismatch → treated as external push
+    expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/c");
+    expect(h.nav.getCurrentRouteInfo()?.routerAction).toBe("push");
+  });
+
+  it("guard redirect on changeTab drops plan and treats as external", () => {
+    const h = createRouterHarness("/");
+
+    h.nav.handleNavigate("/tabs/feed", "push", "forward");
+    h.commitNavigation("/tabs/feed");
+    h.nav.handleSetCurrentTab("feed", "/tabs/feed");
+
+    // changeTab prepares a plan for "/tabs/feed"
+    h.nav.changeTab("tab2", "/tabs/tab2");
+    // Guard redirects to "/login" instead
+    h.commitNavigation("/login");
+
+    // Plan mismatch → treated as external push to /login
+    expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/login");
+    expect(h.nav.getCurrentRouteInfo()?.routerAction).toBe("push");
+  });
+
+  it("guard redirect on resetTab drops plan and treats as external", () => {
+    const h = createRouterHarness("/");
+
+    h.nav.handleNavigate("/tabs/feed", "push", "forward");
+    h.commitNavigation("/tabs/feed");
+    h.nav.handleSetCurrentTab("feed", "/tabs/feed");
+    h.nav.handleNavigate("/tabs/feed/page2", "push", "forward");
+    h.commitNavigation("/tabs/feed/page2");
+
+    // resetTab prepares a plan for "/tabs/feed"
+    h.nav.resetTab("feed", "/tabs/feed");
+    // Guard redirects to "/auth"
+    h.commitNavigation("/auth");
+
+    // Plan mismatch → treated as external push
+    expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/auth");
+  });
+
+  it("guard redirect on resetAll drops plan and treats as external", () => {
+    const h = createRouterHarness("/");
+
+    h.nav.handleNavigate("/a", "push", "forward");
+    h.commitNavigation("/a");
+
+    // resetAll prepares a plan for "/login"
+    h.nav.resetAll("/login");
+    // Guard redirects to "/setup"
+    h.commitNavigation("/setup");
+
+    // Plan mismatch → treated as external push
+    expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/setup");
+  });
+
+  it("guard redirect on handleNavigate (hint path) applies hint to redirected URL", () => {
+    const h = createRouterHarness("/");
+
+    // handleNavigate sets pendingHint, not pendingPlan
+    h.nav.handleNavigate("/protected", "push", "forward");
+    // Guard redirects to "/login"
+    h.commitNavigation("/login");
+
+    // Hint is consumed: direction/action from hint apply to the
+    // redirected URL since handleNavigate uses the external nav path
+    expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/login");
+    expect(h.nav.getCurrentRouteInfo()?.routerDirection).toBe("forward");
+  });
+
+  // ─── Cancelled navigation scenarios ────────────────────────────────
+  //
+  // NavigationFailureType.cancelled fires when a new navigation starts
+  // before the current one completes (imperative router.push/replace
+  // inside a guard). The handler preserves pendingPlan on cancelled so
+  // the replacement navigation's afterEach can consume it.
+
+  it("cancelled failure preserves pendingPlan for subsequent success", () => {
+    const h = createRouterHarness("/");
+
+    h.nav.handleNavigate("/a", "push", "forward");
+    h.commitNavigation("/a");
+    h.nav.handleNavigate("/b", "push", "forward");
+    h.commitNavigation("/b");
+
+    // goBack prepares a plan for "/a"
+    h.nav.goBack();
+
+    // First afterEach: cancelled (another navigation took over)
+    h.runAfterEachOnly("/a", "/b", NavigationFailureType.cancelled);
+
+    // Second afterEach: success at "/a" (the plan's expected target)
+    h.commitNavigation("/a", { replaced: true });
+
+    // Plan was preserved through the cancelled event and committed on success
+    expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/a");
+    expect(h.nav.getCurrentRouteInfo()?.routerDirection).toBe("back");
+    expect(h.nav.getCurrentRouteInfo()?.routerAction).toBe("pop");
+  });
+
+  it("cancelled then success at mismatched URL treats as external", () => {
+    const h = createRouterHarness("/");
+
+    h.nav.handleNavigate("/a", "push", "forward");
+    h.commitNavigation("/a");
+    h.nav.handleNavigate("/b", "push", "forward");
+    h.commitNavigation("/b");
+
+    // goBack prepares plan targeting "/a"
+    h.nav.goBack();
+
+    // First afterEach: cancelled
+    h.runAfterEachOnly("/a", "/b", NavigationFailureType.cancelled);
+
+    // Second afterEach: success but at "/other" (not "/a")
+    h.commitNavigation("/other");
+
+    // Plan mismatch → external push
+    expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/other");
+    expect(h.nav.getCurrentRouteInfo()?.routerAction).toBe("push");
+  });
+
+  // ─── Duplicated navigation scenarios ───────────────────────────────
+  //
+  // NavigationFailureType.duplicated fires when navigating to the
+  // current URL. No state change needed — pending is cleared.
+
+  it("duplicated failure clears pending and is a no-op", () => {
+    const h = createRouterHarness("/");
+
+    h.nav.handleNavigate("/a", "push", "forward");
+    h.commitNavigation("/a");
+
+    // handleNavigate to the same URL — Vue Router fires duplicated
+    h.nav.handleNavigate("/a", "push", "forward");
+    h.runAfterEachOnly("/a", "/a", NavigationFailureType.duplicated);
+
+    // State unchanged
+    expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/a");
+    expect(h.nav.canGoBack()).toBe(true); // /a != / → fallback offset
+    expect(h.nav.canGoBack(2)).toBe(false);
+  });
+
+  it("duplicated failure after handleNavigate clears hint", () => {
+    const h = createRouterHarness("/");
+
+    h.nav.handleNavigate("/a", "push", "forward");
+    h.commitNavigation("/a");
+
+    // Set a hint via handleNavigate, then duplicated clears it
+    h.nav.handleNavigate("/a", "replace", "root");
+    h.runAfterEachOnly("/a", "/a", NavigationFailureType.duplicated);
+
+    // Next navigation should not pick up stale hint
+    h.nav.handleNavigate("/b", "push", "forward");
+    h.commitNavigation("/b");
+
+    expect(h.nav.getCurrentRouteInfo()?.routerDirection).toBe("forward");
+    expect(h.nav.getCurrentRouteInfo()?.routerAction).toBe("push");
+  });
+
+  // ─── Browser interception edge cases ───────────────────────────────
+
+  it("browserInterceptionInFlight resets on non-abort failure after interception", () => {
+    const h = createRouterHarness("/");
+
+    h.nav.handleNavigate("/a", "push", "forward");
+    h.commitNavigation("/a");
+    h.nav.handleNavigate("/b", "push", "forward");
+    h.commitNavigation("/b");
+
+    // Browser back: sets browserInterceptionInFlight=true, next(false)
+    h.emitBrowserDelta(-1);
+
+    // The interception abort fires — preserves pending
+    h.commitNavigation("/a");
+
+    // The re-dispatched go() itself gets a duplicated failure
+    // (e.g. already at that URL for some reason)
+    h.runAfterEachOnly("/a", "/b", NavigationFailureType.duplicated);
+
+    // browserInterceptionInFlight must be reset, not stuck forever
+    // Verify by doing a normal navigation that works correctly
+    h.nav.handleNavigate("/c", "push", "forward");
+    h.commitNavigation("/c");
+    expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/c");
+  });
+
+  it("browser delta of 0 passes through without interception", () => {
+    const h = createRouterHarness("/");
+
+    h.nav.handleNavigate("/a", "push", "forward");
+    h.commitNavigation("/a");
+
+    // Delta 0 should not trigger interception
+    h.emitBrowserDelta(0);
+
+    // Normal navigation should pass through beforeEach
+    h.nav.handleNavigate("/b", "push", "forward");
+    h.commitNavigation("/b");
+    expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/b");
+  });
+
+  it("browser interception with deep forward delta", () => {
+    const h = createRouterHarness("/");
+
+    h.nav.handleNavigate("/a", "push", "forward");
+    h.commitNavigation("/a");
+    h.nav.handleNavigate("/b", "push", "forward");
+    h.commitNavigation("/b");
+    h.nav.handleNavigate("/c", "push", "forward");
+    h.commitNavigation("/c");
+
+    // Go back 2
+    h.nav.goBack();
+    h.commitNavigation("/b", { replaced: true });
+    h.nav.goBack();
+    h.commitNavigation("/a", { replaced: true });
+
+    // Browser forward +2
+    h.emitBrowserDelta(2);
+    h.commitNavigation("/c"); // interception abort
+
+    // The re-dispatched go(2) replaces to /c
+    h.commitNavigation("/c", { replaced: true });
+    expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/c");
+    expect(h.nav.getCurrentRouteInfo()?.routerDirection).toBe("forward");
+  });
+
+  // ─── Query and hash handling ───────────────────────────────────────
+
+  it("plan with query params matches correctly via expectedComparableTarget", () => {
+    const h = createRouterHarness("/");
+
+    h.nav.handleNavigate("/a?q=1", "push", "forward");
+    h.commitNavigation("/a?q=1");
+    h.nav.handleNavigate("/b?filter=x", "push", "forward");
+    h.commitNavigation("/b?filter=x");
+
+    // goBack should target "/a?q=1"
+    h.nav.goBack();
+    h.commitNavigation("/a?q=1", { replaced: true });
+    expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/a");
+    expect(h.nav.getCurrentRouteInfo()?.search).toBe("q=1");
+    expect(h.nav.getCurrentRouteInfo()?.routerDirection).toBe("back");
+  });
+
+  it("hash fragments are stripped from route comparison", () => {
+    const h = createRouterHarness("/");
+
+    h.nav.handleNavigate("/a", "push", "forward");
+    h.commitNavigation("/a");
+
+    // Navigate to /a#section — hash stripped, matches current → dedup skip
+    h.nav.handleNavigate("/a#section", "push", "forward");
+    h.commitNavigation("/a#section");
+
+    // Should be deduped — no new entry
+    expect(h.nav.canGoBack()).toBe(true); // /a != / → fallback offset
+    expect(h.nav.canGoBack(2)).toBe(false);
+  });
+
+  it("goBack to entry with query preserves it through the plan", () => {
+    const h = createRouterHarness("/");
+
+    h.nav.handleNavigate("/search?q=hello", "push", "forward");
+    h.commitNavigation("/search?q=hello");
+    h.nav.handleNavigate("/detail/1", "push", "forward");
+    h.commitNavigation("/detail/1");
+
+    h.nav.goBack();
+    expect(h.router.replace).toHaveBeenLastCalledWith("/search?q=hello");
+    h.commitNavigation("/search?q=hello", { replaced: true });
+
+    expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/search");
+    expect(h.nav.getCurrentRouteInfo()?.search).toBe("q=hello");
+  });
+
+  // ─── handleNavigate replace vs push ────────────────────────────────
+
+  it("handleNavigate with replace uses router.replace", () => {
+    const h = createRouterHarness("/");
+
+    h.nav.handleNavigate("/a", "push", "forward");
+    h.commitNavigation("/a");
+
+    h.nav.handleNavigate("/b", "replace", "none");
+    expect(h.router.replace).toHaveBeenLastCalledWith("/b");
+    h.commitNavigation("/b", { replaced: true });
+
+    expect(h.nav.getCurrentRouteInfo()?.routerAction).toBe("replace");
+    expect(h.nav.getCurrentRouteInfo()?.routerDirection).toBe("none");
+  });
+
+  // ─── Initial state / edge cases ────────────────────────────────────
+
+  it("getCurrentRouteInfo returns undefined before first navigation", () => {
+    const h = createRouterHarness("/");
+
+    // Before any navigation completes, currentRouteInfo is undefined
+    expect(h.nav.getCurrentRouteInfo()).toBeUndefined();
+  });
+
+  it("getLeavingRouteInfo falls back to currentRouteInfo before first leaving", () => {
+    const h = createRouterHarness("/");
+
+    // Before any navigation, both are undefined
+    expect(h.nav.getLeavingRouteInfo()).toBeUndefined();
+
+    // After first navigation, leaving falls back to current
+    h.commitNavigation("/");
+    expect(h.nav.getLeavingRouteInfo()?.pathname).toBe("/");
+
+    // After second navigation, leaving is the previous current
+    h.nav.handleNavigate("/a", "push", "forward");
+    h.commitNavigation("/a");
+    expect(h.nav.getLeavingRouteInfo()?.pathname).toBe("/");
+  });
+
+  it("multiple registerHistoryChangeListener callbacks all fire", () => {
+    const h = createRouterHarness("/");
+    const listener1 = jest.fn();
+    const listener2 = jest.fn();
+    const listener3 = jest.fn();
+
+    h.nav.registerHistoryChangeListener(listener1);
+    h.nav.registerHistoryChangeListener(listener2);
+    h.nav.registerHistoryChangeListener(listener3);
+
+    h.nav.handleNavigate("/a", "push", "forward");
+    h.commitNavigation("/a");
+
+    expect(listener1).toHaveBeenCalledTimes(1);
+    expect(listener2).toHaveBeenCalledTimes(1);
+    expect(listener3).toHaveBeenCalledTimes(1);
+  });
+
+  it("patched router.go ignores non-finite values", () => {
+    const h = createRouterHarness("/");
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      h.nav.handleNavigate("/a", "push", "forward");
+      h.commitNavigation("/a");
+
+      const replaceCalls = (h.router.replace as jest.Mock).mock.calls.length;
+
+      // Non-finite values should be ignored
+      h.router.go(NaN);
+      h.router.go(Infinity);
+      h.router.go(-Infinity);
+
+      expect((h.router.replace as jest.Mock).mock.calls.length).toBe(replaceCalls);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("patched router.go truncates fractional values", () => {
+    const h = createRouterHarness("/");
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      h.nav.handleNavigate("/a", "push", "forward");
+      h.commitNavigation("/a");
+      h.nav.handleNavigate("/b", "push", "forward");
+      h.commitNavigation("/b");
+
+      // 1.7 is truncated to 1, but no forward entries → no-op
+      // -1.9 is truncated to -1, which should go back to /a
+      h.router.go(-1.9);
+      h.commitNavigation("/a", { replaced: true });
+      expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/a");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // ─── resetTab / resetAll edge cases ────────────────────────────────
+
+  it("resetTab on non-active tab is a no-op at the router level", () => {
+    const h = createRouterHarness("/");
+
+    h.nav.handleNavigate("/tabs/feed", "push", "forward");
+    h.commitNavigation("/tabs/feed");
+    h.nav.handleSetCurrentTab("feed", "/tabs/feed");
+
+    h.nav.handleNavigate("/tabs/feed/page2", "push", "forward");
+    h.commitNavigation("/tabs/feed/page2");
+
+    // Switch to another context
+    h.nav.handleNavigate("/other", "push", "forward");
+    h.commitNavigation("/other");
+
+    const replaceCalls = (h.router.replace as jest.Mock).mock.calls.length;
+    const pushCalls = (h.router.push as jest.Mock).mock.calls.length;
+
+    // resetTab on feed — feed is not active context → returns null → no-op
+    h.nav.resetTab("feed", "/tabs/feed");
+
+    expect((h.router.replace as jest.Mock).mock.calls.length).toBe(replaceCalls);
+    expect((h.router.push as jest.Mock).mock.calls.length).toBe(pushCalls);
+
+    // But the tab was reset internally — switching back shows the root
+    h.nav.changeTab("feed", "/tabs/feed");
+    h.commitNavigation("/tabs/feed");
+    expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/tabs/feed");
+  });
+
+  it("resetAll always navigates (never null)", () => {
+    const h = createRouterHarness("/");
+
+    // Even on empty state, resetAll produces a plan
+    h.nav.resetAll("/start");
+    expect(h.router.replace).toHaveBeenLastCalledWith("/start");
+    h.commitNavigation("/start", { replaced: true });
+
+    expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/start");
+    expect(h.nav.getCurrentRouteInfo()?.routerDirection).toBe("root");
+    expect(h.nav.getCurrentRouteInfo()?.routerAction).toBe("replace");
+  });
+
+  // ─── handleNavigateBack edge cases ─────────────────────────────────
+
+  it("handleNavigateBack at cursor 0 with defaultHref navigates to defaultHref", () => {
+    const h = createRouterHarness("/");
+
+    h.nav.handleNavigate("/deep-link", "push", "forward");
+    h.commitNavigation("/deep-link");
+
+    // At cursor 0 in default context, root entry "/deep-link" != "/"
+    // so prepareBack returns a plan targeting the implicit default "/"
+    // But if defaultHref is provided, it targets defaultHref
+    h.nav.handleNavigateBack("/home");
+    expect(h.router.replace).toHaveBeenLastCalledWith("/home");
+    h.commitNavigation("/home", { replaced: true });
+
+    expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/home");
+    expect(h.nav.getCurrentRouteInfo()?.routerDirection).toBe("back");
+    expect(h.nav.getCurrentRouteInfo()?.routerAction).toBe("pop");
+  });
+
+  it("handleNavigateBack at cursor 0 without defaultHref navigates to /", () => {
+    const h = createRouterHarness("/");
+
+    h.nav.handleNavigate("/deep-link", "push", "forward");
+    h.commitNavigation("/deep-link");
+
+    // No defaultHref → implicit default "/" is used
+    h.nav.handleNavigateBack();
+    expect(h.router.replace).toHaveBeenLastCalledWith("/");
+    h.commitNavigation("/", { replaced: true });
+
+    expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/");
+    expect(h.nav.getCurrentRouteInfo()?.routerDirection).toBe("back");
+  });
+
+  it("handleNavigateBack in tab context uses rootHref, ignoring defaultHref", () => {
+    const h = createRouterHarness("/");
+
+    h.nav.handleNavigate("/tabs/feed/deep", "push", "forward");
+    h.commitNavigation("/tabs/feed/deep");
+    h.nav.handleSetCurrentTab("feed", "/tabs/feed");
+
+    // rootHref wins over caller-supplied defaultHref
+    h.nav.handleNavigateBack("/fallback");
+    expect(h.router.replace).toHaveBeenLastCalledWith("/tabs/feed");
+    h.commitNavigation("/tabs/feed", { replaced: true });
+
+    expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/tabs/feed");
+    expect(h.nav.getCurrentRouteInfo()?.routerDirection).toBe("back");
+  });
+
+  // ─── Aborted goForward ─────────────────────────────────────────────
+
+  it("aborted goForward has no effect on context history state", () => {
+    const h = createRouterHarness("/");
+
+    h.nav.handleNavigate("/a", "push", "forward");
+    h.commitNavigation("/a");
+    h.nav.handleNavigate("/b", "push", "forward");
+    h.commitNavigation("/b");
+
+    h.nav.goBack();
+    h.commitNavigation("/a", { replaced: true });
+
+    // goForward prepares plan but navigation is aborted
+    h.nav.goForward();
+    h.runAfterEachOnly("/b", "/a", NavigationFailureType.aborted);
+
+    // State unchanged: still at /a with forward available
+    expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/a");
+    expect(h.nav.canGoForward()).toBe(true);
+
+    // Subsequent forward works normally
+    h.nav.goForward();
+    h.commitNavigation("/b", { replaced: true });
+    expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/b");
+  });
+
+  // ─── Replace via external path ─────────────────────────────────────
+
+  it("external replace via history.state.replaced updates entry in place", () => {
+    const h = createRouterHarness("/");
+
+    h.nav.handleNavigate("/a", "push", "forward");
+    h.commitNavigation("/a");
+
+    // External replace (e.g. redirect guard, no hint/plan)
+    h.commitNavigation("/a-v2", { replaced: true });
+
+    expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/a-v2");
+    expect(h.nav.getCurrentRouteInfo()?.routerAction).toBe("replace");
+    // Only one entry (/a-v2 replaced /a in default context)
+    expect(h.nav.canGoBack()).toBe(true); // /a-v2 != / → fallback
+    expect(h.nav.canGoBack(2)).toBe(false);
+  });
+
+  // ─── navigate() wrapper ────────────────────────────────────────────
+
+  it("navigate wrapper correctly forwards all options including defaults", () => {
+    const h = createRouterHarness("/");
+
+    // With explicit options
+    h.nav.navigate({
+      routerLink: "/a",
+      routerAction: "push",
+      routerDirection: "forward",
+    });
+    h.commitNavigation("/a");
+    expect(h.nav.getCurrentRouteInfo()?.routerAction).toBe("push");
+    expect(h.nav.getCurrentRouteInfo()?.routerDirection).toBe("forward");
+
+    // With defaults (routerAction defaults to "push")
+    h.nav.navigate({ routerLink: "/b" });
+    h.commitNavigation("/b");
+    expect(h.nav.getCurrentRouteInfo()?.routerAction).toBe("push");
+  });
 });

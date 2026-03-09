@@ -33,6 +33,10 @@ type PendingExternalHint = {
  * Extract the search/query portion from a Vue Router fullPath,
  * stripping hash fragments. Hash changes do not trigger Ionic page
  * transitions, so they are excluded from route comparison.
+ *
+ * Note on hash stripping: `parseRouteInput` in contextHistory.ts also
+ * drops hash fragments for the same reason. Hashes are intentionally
+ * not part of the navigation model — they are purely client-side anchors.
  */
 const getSearchFromFullPath = (fullPath: string): string => {
   const [pathAndSearch] = fullPath.split("#", 1);
@@ -75,11 +79,32 @@ export const createIonRouter = (
 ) => {
   const contextHistory = createContextHistory();
 
+  // `pendingBrowserDelta` replaces the old multi-field `currentNavigationInfo`
+  // object. A single nullable number is sufficient because the only
+  // information needed from `opts.history.listen` is the delta direction
+  // and magnitude. `action` and `direction` are no longer needed — they are
+  // determined by the calling method (via pendingPlan/pendingHint) or by
+  // `opts.history.state.replaced` for external navigations.
   let pendingBrowserDelta: number | null = null;
+
+  // Set when beforeEach intercepts a browser back/forward (next(false) +
+  // go(delta)). Cleared in afterEach. While true, an aborted afterEach is
+  // expected (the interception itself) and should NOT clear pendingPlan.
   let browserInterceptionInFlight = false;
 
   // Pending state: either a prepared plan (Ionic-initiated) or an external
-  // hint (handleNavigate direction/animation).
+  // hint (handleNavigate direction/animation). These two slots replace
+  // the old `incomingRouteParams` global with a single-assignment semantic:
+  // each executePlan/handleNavigate call overwrites any previous pending.
+  //
+  // - pendingPlan: set by executePlan() for prepare+commit navigations
+  //   (goBack, goForward, go, changeTab, resetTab, resetAll). The plan
+  //   contains commit() to mutate context history on afterEach success.
+  //
+  // - pendingHint: set by handleNavigate() for external navigations that
+  //   go through push/replace on context history directly in afterEach.
+  //   Contains direction/animation/action hints for CurrentRouteInfo
+  //   production.
   let pendingPlan: PendingNavigation | null = null;
   let pendingHint: PendingExternalHint | null = null;
 
@@ -204,10 +229,27 @@ export const createIonRouter = (
     goForward();
   };
 
+  // `opts.history.listen` fires on `popstate` events only (browser
+  // back/forward, raw `history.go()` calls). It does NOT fire on
+  // programmatic `router.push()` / `router.replace()`. The wrapped
+  // `router.go/back/forward` also bypass this listener and call the
+  // context-aware `go(delta)` path directly. So pendingBrowserDelta
+  // is only populated by browser/native history events.
   opts.history.listen((_to: any, _from: any, info: any) => {
     pendingBrowserDelta = typeof info?.delta === "number" ? info.delta : null;
   });
 
+  // The guard's only job: detect browser back/forward, cancel it, and
+  // delegate to programmatic context-aware go(delta).
+  //
+  // Why intercept? Browser history diverges from the context-history
+  // model (design principle #6). A raw browser back would navigate to
+  // a URL that doesn't correspond to the correct context cursor position.
+  // By cancelling with next(false) and replaying via go(delta), the
+  // navigation goes through the context-aware back/forward algorithms.
+  //
+  // pendingBrowserDelta is cleared BEFORE calling next() to prevent
+  // re-read when the redirect triggers another beforeEach cycle.
   router.beforeEach((_to, _from, next) => {
     const delta = pendingBrowserDelta;
     pendingBrowserDelta = null;
@@ -304,9 +346,13 @@ export const createIonRouter = (
       const leaving = currentRouteInfo;
 
       // Deduplicate: if the resolved URL matches the current route, skip.
-      // This uses `leaving` (captured before clearPending) which is the
-      // pre-commit state — correct because no plan has been committed yet.
-      // The prepared-plan path below has its own dedup via expectedComparableTarget.
+      // This prevents duplicate entries from router-link clicks on the
+      // current page, Vue Router redirect guards that resolve to the
+      // same URL, and hash-only changes (hash is not part of the
+      // comparison). This uses `leaving` (captured before clearPending)
+      // which is the pre-commit state — correct because no plan has been
+      // committed yet. The prepared-plan path below has its own dedup
+      // via expectedComparableTarget.
       if (
         leaving !== undefined &&
         routeInfoToComparablePath(leaving) === toComparablePath(to)
@@ -347,6 +393,12 @@ export const createIonRouter = (
       }
 
       // ── External / unplanned navigation path ────────────────────────
+      // When no prepared plan is pending, or when a pending plan does not
+      // match the final resolved route (guard redirect), we classify the
+      // navigation using Vue Router's own state. `opts.history.state.replaced`
+      // is set by Vue Router when `router.replace()` was used — this is
+      // the secondary signal for action inference when no explicit hint
+      // is present.
       const inferredAction: RouteAction = opts.history.state.replaced
         ? "replace"
         : "push";
@@ -385,6 +437,14 @@ export const createIonRouter = (
    * context. Always uses replace semantics (no push-for-back).
    * No-op if back is fully blocked (already at effective default).
    *
+   * The exclusive use of replace here is an intentional fix for the
+   * semantic bug in the old code: fallback back used `router.push()`
+   * paired with `routerDirection='back'`, which created a new history
+   * entry while running a destructive back transition — retaining the
+   * leaving page when it should have been replaced. Replace semantics
+   * avoid the back/default ping-pong loop that push would cause with
+   * deep-link entry points.
+   *
    * @param defaultHref     - Fallback URL from `IonBackButton.defaultHref`
    * @param routerAnimation - Transition animation override
    */
@@ -410,6 +470,11 @@ export const createIonRouter = (
    * prepare+commit pattern. Instead it stores a `pendingHint` with the
    * caller's direction/animation/action, and the afterEach classifies
    * the navigation via push/replace on the context history.
+   *
+   * Why not prepare+commit? This method does not need pre-computed targets
+   * or commit guards — it delegates context matching and stack mutation
+   * entirely to afterEach. The `routerAction` hint determines push vs
+   * replace, and `opts.history.state.replaced` provides a secondary signal.
    *
    * Called by `useIonRouter().push/replace/navigate()` and IonRouterOutlet.
    *
@@ -441,6 +506,12 @@ export const createIonRouter = (
   /**
    * Convenience wrapper over `handleNavigate` accepting an options object.
    * Destructures `ExternalNavigationOptions` and delegates.
+   *
+   * Unused in the app but kept for third-party consumers that may use the
+   * `navManager` directly. Behavioral fix from the old code: the old
+   * implementation ignored `routerAction` and always used `router.push()`.
+   * This version respects `routerAction`, so `routerAction: 'replace'`
+   * now correctly triggers a replace.
    */
   const navigate = (navigationOptions: ExternalNavigationOptions) => {
     const { routerAnimation, routerDirection, routerLink, routerAction } =
@@ -507,6 +578,12 @@ export const createIonRouter = (
    * Return the route info for the page being navigated away from.
    * Falls back to `currentRouteInfo` if no leaving info has been set yet
    * (i.e. before the first navigation completes).
+   *
+   * Behavioral change from the old code: the old implementation did a
+   * live lookup into locationHistory with a position-math fallback that
+   * could diverge after clearHistory or index edge cases. This version
+   * uses a cached value, which is simpler and always reflects the state
+   * at the time CurrentRouteInfo was last produced.
    */
   const getLeavingRouteInfo = (): RouteInfo | undefined =>
     leavingRouteInfo ?? currentRouteInfo;
