@@ -18,6 +18,23 @@ import type {
   RouteInfo,
 } from "./types";
 
+// ── Debug logging ─────────────────────────────────────────────────────
+// Set to true to enable verbose navigation tracing in the console.
+// Logs every hook entry/exit, plan lifecycle, and context-history snapshot.
+const DEBUG_NAV = true;
+
+let dbgSeq = 0;
+const dbg = (label: string, data?: Record<string, unknown>) => {
+  if (!DEBUG_NAV) return;
+  dbgSeq += 1;
+  const tag = `[IonicNav #${dbgSeq}] ${label}`;
+  if (data) {
+    console.debug(tag, data);
+  } else {
+    console.debug(tag);
+  }
+};
+
 type PendingNavigation = {
   plan: PreparedPlan;
   animation?: AnimationBuilder;
@@ -42,6 +59,67 @@ const getSearchFromFullPath = (fullPath: string): string => {
   const [pathAndSearch] = fullPath.split("#", 1);
   const [, search = ""] = pathAndSearch.split("?", 2);
   return search;
+};
+
+type ParsedQueryValue = string | null | Array<string | null>;
+type ParsedQuery = Record<string, ParsedQueryValue>;
+
+// Minimal query parser (compatible with Vue Router's default parseQuery).
+// Needed to build a { path, query, replace } redirect object without
+// embedding "?" in `path` (Vue Router would drop it otherwise).
+const parseQuery = (search: string): ParsedQuery => {
+  const query: ParsedQuery = {};
+  if (search === "" || search === "?") {
+    return query;
+  }
+
+  const parts = (search[0] === "?" ? search.slice(1) : search).split("&");
+  for (let i = 0; i < parts.length; i += 1) {
+    const raw = parts[i].replace(/\+/g, " ");
+    const eqPos = raw.indexOf("=");
+    const rawKey = eqPos < 0 ? raw : raw.slice(0, eqPos);
+    const rawValue = eqPos < 0 ? null : raw.slice(eqPos + 1);
+
+    let key = rawKey;
+    let value: string | null = rawValue;
+    try {
+      key = decodeURIComponent(rawKey);
+    } catch {
+      // Keep raw key on decode failure.
+    }
+    if (rawValue !== null) {
+      try {
+        value = decodeURIComponent(rawValue);
+      } catch {
+        value = rawValue;
+      }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(query, key)) {
+      const existing = query[key];
+      if (Array.isArray(existing)) {
+        existing.push(value);
+      } else {
+        query[key] = [existing, value];
+      }
+    } else {
+      query[key] = value;
+    }
+  }
+
+  return query;
+};
+
+const buildGuardRedirect = (target: string, replace: boolean): RouteLocationRaw => {
+  const [pathWithSearch] = target.split("#", 1);
+  const [path, search = ""] = pathWithSearch.split("?", 2);
+  const query = search ? parseQuery(search) : undefined;
+
+  return {
+    path,
+    query,
+    replace,
+  } as any;
 };
 
 /**
@@ -86,11 +164,6 @@ export const createIonRouter = (
   // determined by the calling method (via pendingPlan/pendingHint) or by
   // `opts.history.state.replaced` for external navigations.
   let pendingBrowserDelta: number | null = null;
-
-  // Set when beforeEach intercepts a browser back/forward (next(false) +
-  // go(delta)). Cleared in afterEach. While true, an aborted afterEach is
-  // expected (the interception itself) and should NOT clear pendingPlan.
-  let browserInterceptionInFlight = false;
 
   // Pending state: either a prepared plan (Ionic-initiated) or an external
   // hint (handleNavigate direction/animation). These two slots replace
@@ -151,6 +224,15 @@ export const createIonRouter = (
    * Execute a prepared plan: store it as pending and dispatch the router call.
    */
   const executePlan = (plan: PreparedPlan, animation?: AnimationBuilder): void => {
+    dbg("executePlan", {
+      target: plan.target,
+      transport: plan.transport,
+      direction: plan.direction,
+      action: plan.action,
+      expectedComparableTarget: plan.expectedComparableTarget,
+      snapshot: contextHistory.snapshot(),
+    });
+
     pendingPlan = { plan, animation: animation ?? plan.animation };
 
     // void: afterEach handles all navigation outcomes (success, failure,
@@ -168,11 +250,14 @@ export const createIonRouter = (
    * prepare+commit pattern through Vue Router.
    */
   const go = (delta: number, routerAnimation?: AnimationBuilder) => {
+    dbg("go()", { delta, snapshot: contextHistory.snapshot() });
     const plan = contextHistory.prepareGo(delta);
     if (plan === null) {
+      dbg("go() → prepareGo returned null (blocked)");
       return;
     }
 
+    dbg("go() → plan ready", { target: plan.target, direction: plan.direction });
     executePlan(plan, routerAnimation);
   };
 
@@ -182,8 +267,10 @@ export const createIonRouter = (
    * Called by `useIonRouter().back()` and the `ionBackButton` handler.
    */
   const goBack = (routerAnimation?: AnimationBuilder) => {
+    dbg("goBack()");
     const plan = contextHistory.prepareBack();
     if (plan === null) {
+      dbg("goBack() → prepareBack returned null (blocked)");
       return;
     }
 
@@ -195,8 +282,10 @@ export const createIonRouter = (
    * are no forward entries. Uses replace semantics.
    */
   const goForward = (routerAnimation?: AnimationBuilder) => {
+    dbg("goForward()");
     const plan = contextHistory.prepareForward();
     if (plan === null) {
+      dbg("goForward() → prepareForward returned null (blocked)");
       return;
     }
 
@@ -237,16 +326,27 @@ export const createIonRouter = (
   // is only populated by browser/native history events.
   opts.history.listen((_to: any, _from: any, info: any) => {
     pendingBrowserDelta = typeof info?.delta === "number" ? info.delta : null;
+    dbg("popstate (history.listen)", {
+      delta: pendingBrowserDelta,
+      to: _to,
+      from: _from,
+      browserUrl: typeof location !== "undefined" ? location.href : "n/a",
+    });
   });
 
-  // The guard's only job: detect browser back/forward, cancel it, and
-  // delegate to programmatic context-aware go(delta).
+  // The guard's only job: detect browser back/forward and translate it into
+  // a context-aware prepared plan.
+  //
+  // Important: Do NOT use `next(false)` for popstate interception. Aborting a
+  // popstate navigation makes Vue Router schedule an async history.go()
+  // restoration to undo the URL change. That restoration can race with Ionic's
+  // own replace-based re-sync and snap the address bar back to the leaving URL.
   //
   // Why intercept? Browser history diverges from the context-history
   // model (design principle #6). A raw browser back would navigate to
   // a URL that doesn't correspond to the correct context cursor position.
-  // By cancelling with next(false) and replaying via go(delta), the
-  // navigation goes through the context-aware back/forward algorithms.
+  // By preparing a context-history plan (and redirecting when needed),
+  // the navigation follows the context-aware back/forward algorithms.
   //
   // pendingBrowserDelta is cleared BEFORE calling next() to prevent
   // re-read when the redirect triggers another beforeEach cycle.
@@ -254,13 +354,52 @@ export const createIonRouter = (
     const delta = pendingBrowserDelta;
     pendingBrowserDelta = null;
 
+    dbg("beforeEach", {
+      to: _to.path,
+      from: _from.path,
+      delta,
+      hasPendingPlan: pendingPlan !== null,
+      hasPendingHint: pendingHint !== null,
+      browserUrl: typeof location !== "undefined" ? location.href : "n/a",
+    });
+
     if (delta !== null && delta !== 0) {
-      browserInterceptionInFlight = true;
-      next(false);
-      go(delta);
+      dbg("beforeEach → POPSTATE", { delta });
+
+      const plan = contextHistory.prepareGo(delta);
+      if (plan === null) {
+        // Blocked: keep the app on the current route. Using a replace redirect
+        // avoids Vue Router's abort restoration race.
+        dbg("beforeEach → POPSTATE blocked, restoring from via replace", {
+          from: _from.fullPath,
+        });
+        next(buildGuardRedirect(_from.fullPath, true));
+        return;
+      }
+
+      // Popstate navigations are handled through the same prepare+commit
+      // lifecycle as Ionic-initiated navigations: store the plan, then let the
+      // navigation complete (or redirect it) so afterEach can commit.
+      pendingPlan = { plan, animation: plan.animation };
+      pendingHint = null;
+
+      const toPath = toComparablePath(_to);
+      if (toPath === plan.expectedComparableTarget) {
+        dbg("beforeEach → POPSTATE already at plan target", { toPath });
+        next();
+        return;
+      }
+
+      dbg("beforeEach → POPSTATE redirect to plan target", {
+        expected: plan.expectedComparableTarget,
+        toPath,
+        redirectTo: plan.target,
+      });
+      next(buildGuardRedirect(plan.target, plan.transport === "replace"));
       return;
     }
 
+    dbg("beforeEach → PASS");
     next();
   });
 
@@ -308,65 +447,79 @@ export const createIonRouter = (
       _from: RouteLocationNormalized,
       failure?: NavigationFailure
     ) => {
+      const failureLabel = failure
+        ? failure.type === NavigationFailureType.aborted ? "aborted"
+        : failure.type === NavigationFailureType.cancelled ? "cancelled"
+        : failure.type === NavigationFailureType.duplicated ? "duplicated"
+        : `unknown(${failure.type})`
+        : undefined;
+
+      dbg("afterEach ENTER", {
+        to: to.path,
+        from: _from.path,
+        failure: failureLabel ?? "none",
+        hasPendingPlan: pendingPlan !== null,
+        pendingPlanTarget: pendingPlan?.plan.expectedComparableTarget,
+        hasPendingHint: pendingHint !== null,
+        currentRouteInfo: currentRouteInfo?.pathname,
+        browserUrl: typeof location !== "undefined" ? location.href : "n/a",
+      });
+
       if (failure) {
-        if (
-          browserInterceptionInFlight &&
-          failure.type === NavigationFailureType.aborted
-        ) {
-          // Browser interception abort: the beforeEach already called
-          // next(false) and re-dispatched via go(delta). The pending plan
-          // was set by go() AFTER next(false), so do NOT clear it — the
-          // next successful afterEach will consume it.
-          browserInterceptionInFlight = false;
-          return;
-        }
-
-        // Always reset browser interception flag on any failure, even
-        // if it wasn't the interception abort above. Prevents the flag
-        // from staying true permanently if the re-dispatched navigation
-        // itself fails with cancelled or duplicated.
-        browserInterceptionInFlight = false;
-
         if (failure.type === NavigationFailureType.aborted) {
           // No rollback needed: prepare+commit means no state was mutated.
+          dbg("afterEach → abort, clearing pending");
           clearPending();
         } else if (failure.type === NavigationFailureType.cancelled) {
           // Preserve pending — see comment block above for rationale.
+          dbg("afterEach → cancelled, preserving pending");
         } else {
           // duplicated or unknown failure types.
+          dbg("afterEach → duplicated/unknown failure, clearing pending");
           clearPending();
         }
 
         return;
       }
 
-      browserInterceptionInFlight = false;
-
       const { plan: consumedPlan, hint: consumedHint } = clearPending();
       const leaving = currentRouteInfo;
 
+      const leavingPath = routeInfoToComparablePath(leaving);
+      const toPath = toComparablePath(to);
+
+      dbg("afterEach SUCCESS", {
+        toPath,
+        leavingPath,
+        hasPlan: consumedPlan !== null,
+        planTarget: consumedPlan?.plan.expectedComparableTarget,
+        hasHint: consumedHint !== null,
+        hintAction: consumedHint?.action,
+        hintDirection: consumedHint?.direction,
+      });
+
       // Deduplicate: if the resolved URL matches the current route, skip.
-      // This prevents duplicate entries from router-link clicks on the
-      // current page, Vue Router redirect guards that resolve to the
-      // same URL, and hash-only changes (hash is not part of the
-      // comparison). This uses `leaving` (captured before clearPending)
-      // which is the pre-commit state — correct because no plan has been
-      // committed yet. The prepared-plan path below has its own dedup
-      // via expectedComparableTarget.
       if (
         leaving !== undefined &&
-        routeInfoToComparablePath(leaving) === toComparablePath(to)
+        leavingPath === toPath
       ) {
+        dbg("afterEach → DEDUP (leaving === to), skipping", { leavingPath, toPath });
         notifyHistoryChange();
         return;
       }
 
       // ── Prepared plan path ──────────────────────────────────────────
       if (consumedPlan !== null) {
-        const resolvedPath = toComparablePath(to);
+        const resolvedPath = toPath;
 
         if (resolvedPath === consumedPlan.plan.expectedComparableTarget) {
           // Plan matches: commit to mutate context history state.
+          dbg("afterEach → PLAN MATCH, committing", {
+            resolvedPath,
+            direction: consumedPlan.plan.direction,
+            action: consumedPlan.plan.action,
+          });
+
           const resolvedPayload = {
             pathname: to.path,
             search: getSearchFromFullPath(to.fullPath),
@@ -384,24 +537,35 @@ export const createIonRouter = (
             }
           );
           leavingRouteInfo = leaving;
+
+          dbg("afterEach → PLAN COMMITTED", {
+            entering: entering.pathname,
+            currentRouteInfo: currentRouteInfo.pathname,
+            snapshot: contextHistory.snapshot(),
+            browserUrl: typeof location !== "undefined" ? location.href : "n/a",
+          });
+
           notifyHistoryChange();
           return;
         }
 
         // Plan does not match resolved route (e.g. guard redirect).
+        dbg("afterEach → PLAN MISMATCH, falling through to external path", {
+          resolvedPath,
+          expectedTarget: consumedPlan.plan.expectedComparableTarget,
+        });
         // Fall through to external navigation path below.
       }
 
       // ── External / unplanned navigation path ────────────────────────
-      // When no prepared plan is pending, or when a pending plan does not
-      // match the final resolved route (guard redirect), we classify the
-      // navigation using Vue Router's own state. `opts.history.state.replaced`
-      // is set by Vue Router when `router.replace()` was used — this is
-      // the secondary signal for action inference when no explicit hint
-      // is present.
       const inferredAction: RouteAction = opts.history.state.replaced
         ? "replace"
         : "push";
+
+      dbg("afterEach → EXTERNAL path", {
+        inferredAction,
+        historyStateReplaced: !!opts.history.state.replaced,
+      });
 
       const routePayload = {
         pathname: to.path,
@@ -425,6 +589,16 @@ export const createIonRouter = (
       });
 
       leavingRouteInfo = leaving;
+
+      dbg("afterEach → EXTERNAL committed", {
+        entering: entering.pathname,
+        action: consumedHint?.action ?? inferredAction,
+        direction: consumedHint?.direction,
+        currentRouteInfo: currentRouteInfo.pathname,
+        snapshot: contextHistory.snapshot(),
+        browserUrl: typeof location !== "undefined" ? location.href : "n/a",
+      });
+
       notifyHistoryChange();
     }
   );
@@ -452,6 +626,7 @@ export const createIonRouter = (
     defaultHref?: string,
     routerAnimation?: AnimationBuilder
   ) => {
+    dbg("handleNavigateBack", { defaultHref, snapshot: contextHistory.snapshot() });
     const plan = contextHistory.prepareBack(defaultHref, routerAnimation);
 
     if (plan !== null) {
@@ -459,6 +634,7 @@ export const createIonRouter = (
       return;
     }
 
+    dbg("handleNavigateBack → blocked (already at effective default)");
     // Back is fully blocked (already at the effective default target).
     // Nothing to do.
   };
@@ -489,6 +665,8 @@ export const createIonRouter = (
     routerDirection: RouteDirection = "forward",
     routerAnimation?: AnimationBuilder
   ) => {
+    dbg("handleNavigate", { path, routerAction, routerDirection });
+
     pendingHint = {
       direction: routerDirection,
       animation: routerAnimation,
@@ -517,6 +695,8 @@ export const createIonRouter = (
     const { routerAnimation, routerDirection, routerLink, routerAction } =
       navigationOptions;
 
+    dbg("navigate (ExternalNavigationOptions)", { routerLink, routerAction, routerDirection });
+
     handleNavigate(
       routerLink,
       routerAction ?? "push",
@@ -536,7 +716,9 @@ export const createIonRouter = (
    * @param path - Fallback URL / current href for the tab
    */
   const changeTab = (tab: string, path?: string) => {
+    dbg("changeTab", { tab, path, snapshot: contextHistory.snapshot() });
     if (!path) {
+      dbg("changeTab → no path, skipping");
       return;
     }
 
@@ -554,8 +736,10 @@ export const createIonRouter = (
    * @param defaultHref - Expected root URL for the tab
    */
   const resetTab = (tab: string, defaultHref?: string) => {
+    dbg("resetTab", { tab, defaultHref });
     const plan = contextHistory.prepareResetTab(tab, defaultHref);
     if (plan === null) {
+      dbg("resetTab → null plan (not active or empty)");
       return;
     }
 
@@ -567,6 +751,7 @@ export const createIonRouter = (
    * `redirectTo`. Used for hard-reset scenarios (e.g. logout).
    */
   const resetAll = (redirectTo: string) => {
+    dbg("resetAll", { redirectTo });
     const plan = contextHistory.prepareResetAll(redirectTo);
     executePlan(plan);
   };
@@ -605,7 +790,9 @@ export const createIonRouter = (
    *   context matching prefix and back-fallback at cursor 0).
    */
   const handleSetCurrentTab = (tab: string, rootHref: string) => {
+    dbg("handleSetCurrentTab", { tab, rootHref, snapshotBefore: contextHistory.snapshot() });
     contextHistory.handleSetCurrentTab(tab, rootHref);
+    dbg("handleSetCurrentTab done", { snapshotAfter: contextHistory.snapshot() });
   };
 
   /**

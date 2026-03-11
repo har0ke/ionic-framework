@@ -22,6 +22,48 @@ const createRoute = (url: string): MockRoute => {
   };
 };
 
+const stringifyQuery = (query: Record<string, any>): string => {
+  let search = "";
+  for (const key in query) {
+    const value = query[key];
+    if (value === undefined) {
+      continue;
+    }
+    if (value === null) {
+      search += (search.length ? "&" : "") + key;
+      continue;
+    }
+    const values = Array.isArray(value) ? value : [value];
+    values.forEach((v) => {
+      if (v === undefined) {
+        return;
+      }
+      search += (search.length ? "&" : "") + key;
+      if (v !== null) {
+        search += `=${String(v)}`;
+      }
+    });
+  }
+  return search;
+};
+
+const locationToUrl = (location: any): string => {
+  if (typeof location === "string") {
+    return location;
+  }
+
+  if (!location || typeof location !== "object") {
+    throw new Error("Invalid redirect location");
+  }
+
+  const path = typeof location.path === "string" ? location.path : "";
+  const query = location.query as Record<string, any> | undefined;
+  const hash = typeof location.hash === "string" ? location.hash : "";
+  const search = query && Object.keys(query).length ? stringifyQuery(query) : "";
+  const fullPath = search ? `${path}?${search}` : path;
+  return hash ? `${fullPath}${hash}` : fullPath;
+};
+
 /**
  * Create a test harness that mocks Vue Router and wires up createIonRouter.
  *
@@ -35,7 +77,7 @@ const createRoute = (url: string): MockRoute => {
  * - `emitBrowserDelta(delta)` — simulate a browser popstate event by
  *   calling the `opts.history.listen` callback with the given delta.
  * - `runBeforeEachOnly(url)` — run only the beforeEach guard and return
- *   the `next()` argument (false = intercepted, undefined = passed).
+ *   the `next()` argument (undefined = passed, object/string = redirected).
  * - `runAfterEachOnly(to, from, failure?)` — run afterEach in isolation
  *   without updating router state (useful for failure scenarios).
  */
@@ -93,17 +135,33 @@ const createRouterHarness = (initialPath = "/") => {
 
     if (nextArg === false) {
       afterEachHook?.(to, from, { type: NavigationFailureType.aborted });
-      return;
+      return nextArg;
+    }
+
+    if (nextArg !== undefined) {
+      const redirectedUrl = locationToUrl(nextArg);
+      const redirectedTo = createRoute(redirectedUrl);
+      const replaced =
+        typeof nextArg === "object" && nextArg !== null
+          ? Boolean((nextArg as any).replace)
+          : false;
+
+      history.state.replaced = replaced;
+      router.currentRoute.value = redirectedTo;
+      afterEachHook?.(redirectedTo, from);
+      return nextArg;
     }
 
     if (options?.failureType !== undefined) {
       afterEachHook?.(to, from, { type: options.failureType });
-      return;
+      return nextArg;
     }
 
     history.state.replaced = Boolean(options?.replaced);
     router.currentRoute.value = to;
     afterEachHook?.(to, from);
+
+    return nextArg;
   };
 
   const emitBrowserDelta = (delta: number) => {
@@ -194,17 +252,18 @@ describe("createIonRouter integration", () => {
     h.commitNavigation("/b");
 
     h.emitBrowserDelta(-1);
-    const nextBack = h.runBeforeEachOnly("/a");
-    expect(nextBack).toBe(false);
-    expect(h.router.replace).toHaveBeenLastCalledWith("/a");
-
-    h.nav.goBack();
-    h.commitNavigation("/a", { replaced: true });
+    h.commitNavigation("/a");
+    expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/a");
+    expect(h.nav.getCurrentRouteInfo()?.routerDirection).toBe("back");
+    expect(h.nav.getCurrentRouteInfo()?.routerAction).toBe("pop");
+    expect(h.router.replace).not.toHaveBeenCalled();
 
     h.emitBrowserDelta(1);
-    const nextForward = h.runBeforeEachOnly("/b");
-    expect(nextForward).toBe(false);
-    expect(h.router.replace).toHaveBeenLastCalledWith("/b");
+    h.commitNavigation("/b");
+    expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/b");
+    expect(h.nav.getCurrentRouteInfo()?.routerDirection).toBe("forward");
+    expect(h.nav.getCurrentRouteInfo()?.routerAction).toBe("push");
+    expect(h.router.replace).not.toHaveBeenCalled();
   });
 
   it("replays deep history deltas through context-aware go steps", () => {
@@ -219,11 +278,9 @@ describe("createIonRouter integration", () => {
 
     h.emitBrowserDelta(-2);
     h.commitNavigation("/a");
-
-    expect(h.router.replace).toHaveBeenLastCalledWith("/a");
-
-    h.commitNavigation("/a", { replaced: true });
     expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/a");
+    expect(h.nav.getCurrentRouteInfo()?.routerDirection).toBe("back");
+    expect(h.nav.getCurrentRouteInfo()?.routerAction).toBe("pop");
     // Default context at cursor 0: '/a' != '/' → fallback-to-default adds +1
     expect(h.nav.canGoBack()).toBe(true);
     expect(h.nav.canGoBack(2)).toBe(false);
@@ -231,11 +288,8 @@ describe("createIonRouter integration", () => {
 
     h.emitBrowserDelta(2);
     h.commitNavigation("/c");
-
-    expect(h.router.replace).toHaveBeenLastCalledWith("/c");
-
-    h.commitNavigation("/c", { replaced: true });
     expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/c");
+    expect(h.nav.getCurrentRouteInfo()?.routerDirection).toBe("forward");
     expect(h.nav.canGoBack(2)).toBe(true);
   });
 
@@ -314,25 +368,21 @@ describe("createIonRouter integration", () => {
     }
   });
 
-  it("browser interception abort does not clear the re-dispatched plan", () => {
+  it("blocks browser popstate when no context plan exists", () => {
     const h = createRouterHarness("/");
 
-    h.nav.handleNavigate("/a", "push", "forward");
-    h.commitNavigation("/a");
-    h.nav.handleNavigate("/b", "push", "forward");
-    h.commitNavigation("/b");
+    // Initial navigation to implicit default.
+    h.commitNavigation("/");
+    expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/");
+    expect(h.nav.canGoBack()).toBe(false);
 
     h.emitBrowserDelta(-1);
-    h.commitNavigation("/a");
+    // Simulate the browser trying to navigate elsewhere; Ionic should
+    // restore the current URL via a replace redirect.
+    h.commitNavigation("/somewhere");
 
-    expect(h.router.replace).toHaveBeenLastCalledWith("/a");
-
-    h.commitNavigation("/a", { replaced: true });
-
-    expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/a");
-    expect(h.nav.getCurrentRouteInfo()?.routerDirection).toBe("back");
-    expect(h.nav.getCurrentRouteInfo()?.routerAction).toBe("pop");
-    expect(h.nav.canGoForward()).toBe(true);
+    expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/");
+    expect(h.nav.canGoBack()).toBe(false);
   });
 
   it("aborted plan has no effect on context history state", () => {
@@ -802,31 +852,6 @@ describe("createIonRouter integration", () => {
 
   // ─── Browser interception edge cases ───────────────────────────────
 
-  it("browserInterceptionInFlight resets on non-abort failure after interception", () => {
-    const h = createRouterHarness("/");
-
-    h.nav.handleNavigate("/a", "push", "forward");
-    h.commitNavigation("/a");
-    h.nav.handleNavigate("/b", "push", "forward");
-    h.commitNavigation("/b");
-
-    // Browser back: sets browserInterceptionInFlight=true, next(false)
-    h.emitBrowserDelta(-1);
-
-    // The interception abort fires — preserves pending
-    h.commitNavigation("/a");
-
-    // The re-dispatched go() itself gets a duplicated failure
-    // (e.g. already at that URL for some reason)
-    h.runAfterEachOnly("/a", "/b", NavigationFailureType.duplicated);
-
-    // browserInterceptionInFlight must be reset, not stuck forever
-    // Verify by doing a normal navigation that works correctly
-    h.nav.handleNavigate("/c", "push", "forward");
-    h.commitNavigation("/c");
-    expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/c");
-  });
-
   it("browser delta of 0 passes through without interception", () => {
     const h = createRouterHarness("/");
 
@@ -860,10 +885,7 @@ describe("createIonRouter integration", () => {
 
     // Browser forward +2
     h.emitBrowserDelta(2);
-    h.commitNavigation("/c"); // interception abort
-
-    // The re-dispatched go(2) replaces to /c
-    h.commitNavigation("/c", { replaced: true });
+    h.commitNavigation("/c");
     expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/c");
     expect(h.nav.getCurrentRouteInfo()?.routerDirection).toBe("forward");
   });
