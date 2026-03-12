@@ -302,6 +302,23 @@ export const createContextHistory = () => {
     const isCrossContextPush = targetContext !== previousActiveContext;
     const targetStack = ensureContextStack(targetContext);
 
+    // Dedup: if the target context's current entry already matches the
+    // incoming route, skip the push entirely. This prevents duplicate
+    // entries when rapid-fire deep links or cross-context pushes resolve
+    // to a URL that the target context is already showing.
+    // For cross-context pushes, activeContext is still switched so that
+    // the correct tab becomes active.
+    if (targetStack.entries.length > 0) {
+      const cursorEntry = targetStack.entries[targetStack.cursor];
+      const incomingPath = parsed.search
+        ? `${parsed.pathname}?${parsed.search}`
+        : parsed.pathname;
+      if (entryToPath(cursorEntry) === incomingPath) {
+        activeContext = targetContext;
+        return cursorEntry;
+      }
+    }
+
     truncateForwardEntriesIfNeeded(targetStack);
 
     const entry = createNavEntry(targetContext, parsed, {

@@ -231,6 +231,100 @@ describe("Context History (Chunk B stack operations)", () => {
     ctx.push({ pathname: "/b/", search: "?x=2" });
     expect(ctx.currentEntry()?.search).toBe("x=2");
   });
+
+  it("same-context push dedup: skips push when cursor entry matches incoming path", () => {
+    const ctx = createContextHistory();
+
+    ctx.push("/a/");
+    const firstEntry = ctx.currentEntry();
+    ctx.push("/a/");
+
+    // Should return the existing entry, not create a new one
+    expect(ctx.currentEntry()).toBe(firstEntry);
+
+    // Stack should have exactly 1 entry
+    const snap = ctx.snapshot();
+    expect(snap.contexts.default.entries.length).toBe(1);
+  });
+
+  it("cross-context push dedup: skips push when target context cursor entry matches", () => {
+    const ctx = createContextHistory();
+    ctx.registerContext("feed", "/tabs/feed");
+    ctx.registerContext("profile", "/tabs/profileTab");
+
+    // Set up profile context with an entry
+    ctx.push("/tabs/profileTab/");
+    const profileEntry = ctx.currentEntry();
+
+    // Switch to feed
+    ctx.push("/tabs/feed/");
+    ctx.push("/tabs/feed/page2/");
+
+    // Now push same URL that profile context already has at cursor
+    ctx.push("/tabs/profileTab/");
+
+    // Should reuse existing profile entry, not create a duplicate
+    expect(ctx.currentEntry()).toBe(profileEntry);
+
+    // Profile context should still have exactly 1 entry
+    const snap = ctx.snapshot();
+    expect(snap.contexts.profile.entries.length).toBe(1);
+    expect(snap.activeContext).toBe("profile");
+  });
+
+  it("push dedup considers query string in comparison", () => {
+    const ctx = createContextHistory();
+
+    ctx.push("/a/?q=1");
+    const firstEntry = ctx.currentEntry();
+
+    // Same path+query → dedup
+    ctx.push("/a/?q=1");
+    expect(ctx.currentEntry()).toBe(firstEntry);
+
+    // Different query → new entry
+    ctx.push("/a/?q=2");
+    expect(ctx.currentEntry()).not.toBe(firstEntry);
+    expect(ctx.currentEntry()?.search).toBe("q=2");
+
+    const snap = ctx.snapshot();
+    expect(snap.contexts.default.entries.length).toBe(2);
+  });
+
+  it("push dedup does not fire for different paths in same context", () => {
+    const ctx = createContextHistory();
+
+    ctx.push("/a/");
+    ctx.push("/b/");
+
+    const snap = ctx.snapshot();
+    expect(snap.contexts.default.entries.length).toBe(2);
+    expect(snap.contexts.default.entries[0].url).toBe("/a/");
+    expect(snap.contexts.default.entries[1].url).toBe("/b/");
+  });
+
+  it("rapid-fire cross-context pushes to same tab root produce only one entry", () => {
+    const ctx = createContextHistory();
+    ctx.registerContext("profile", "/tabs/profileTab");
+    ctx.handleSetCurrentTab("profile", "/tabs/profileTab/");
+
+    // Simulate initial route
+    ctx.push("/tabs/profileTab/");
+
+    // Switch away
+    ctx.push("/login/");
+
+    // Simulate rapid-fire deep links all resolving to the same tab root
+    ctx.push("/tabs/profileTab/");
+    ctx.push("/tabs/profileTab/");
+    ctx.push("/tabs/profileTab/");
+
+    // Profile context should have exactly 1 entry, not 4
+    const snap = ctx.snapshot();
+    expect(snap.contexts.profile.entries.length).toBe(1);
+    expect(snap.contexts.profile.entries[0].url).toBe("/tabs/profileTab/");
+    expect(snap.activeContext).toBe("profile");
+  });
 });
 
 describe("Context History (Chunk C navigation algorithms)", () => {

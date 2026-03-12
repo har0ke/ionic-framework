@@ -222,6 +222,14 @@ export const createIonRouter = (
 
   /**
    * Execute a prepared plan: store it as pending and dispatch the router call.
+   *
+   * Same-URL short-circuit: if the plan's target matches the current browser
+   * URL, Vue Router would reject the navigation as `duplicated`. This happens
+   * when duplicate entries exist in the context stack (e.g. rapid-fire deep
+   * links pushed the same URL multiple times). Instead of dispatching through
+   * Vue Router and having the plan's commit() never called, we commit directly,
+   * produce CurrentRouteInfo, and notify listeners. The browser URL is already
+   * correct so no routing is needed — only the cursor position changes.
    */
   const executePlan = (plan: PreparedPlan, animation?: AnimationBuilder): void => {
     dbg("executePlan", {
@@ -232,6 +240,46 @@ export const createIonRouter = (
       expectedComparableTarget: plan.expectedComparableTarget,
       snapshot: contextHistory.snapshot(),
     });
+
+    // Same-URL short-circuit: commit directly when the target URL matches
+    // the current browser URL, avoiding a Vue Router "duplicated" rejection.
+    const currentPath = toComparablePath(router.currentRoute.value);
+    if (currentPath === plan.expectedComparableTarget) {
+      dbg("executePlan → SAME-URL short-circuit, committing directly", {
+        currentPath,
+        direction: plan.direction,
+        action: plan.action,
+      });
+
+      const resolvedPayload = {
+        pathname: router.currentRoute.value.path,
+        search: getSearchFromFullPath(router.currentRoute.value.fullPath),
+        params: router.currentRoute.value.params as Record<string, any> | undefined,
+      };
+
+      const effectiveAnimation = animation ?? plan.animation;
+      const leaving = currentRouteInfo;
+      const entering = plan.commit(resolvedPayload);
+
+      currentRouteInfo = contextHistory.produceCurrentRouteInfo(
+        entering,
+        leaving,
+        {
+          direction: plan.direction,
+          action: plan.action,
+          animation: effectiveAnimation,
+        }
+      );
+      leavingRouteInfo = leaving;
+
+      dbg("executePlan → SAME-URL committed", {
+        entering: entering.pathname,
+        snapshot: contextHistory.snapshot(),
+      });
+
+      notifyHistoryChange();
+      return;
+    }
 
     pendingPlan = { plan, animation: animation ?? plan.animation };
 
