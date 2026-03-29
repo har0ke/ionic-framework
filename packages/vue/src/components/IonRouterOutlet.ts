@@ -256,11 +256,6 @@ export const IonRouterOutlet = /*@__PURE__*/ defineComponent({
       progressAnimation: boolean,
       animationBuilder?: AnimationBuilder
     ) => {
-      if (skipTransition) {
-        skipTransition = false;
-        return Promise.resolve(false);
-      }
-
       if (enteringEl === leavingEl) {
         return Promise.resolve(false);
       }
@@ -316,6 +311,18 @@ export const IonRouterOutlet = /*@__PURE__*/ defineComponent({
     };
 
     const handlePageTransition = async () => {
+      /**
+       * Consume the skipTransition flag unconditionally at the top of
+       * handlePageTransition.  The flag is set by onEnd(true) after a
+       * swipe-back commit to suppress the follow-up animated transition.
+       * If we only reset it inside transition(), any early-return path
+       * (enteringViewItem === leavingViewItem, or entering-already-visible)
+       * would leak the flag into the NEXT navigation, silently suppressing
+       * its animation.
+       */
+      const shouldSkipTransition = skipTransition;
+      skipTransition = false;
+
       const routeInfo = ionRouter.getCurrentRouteInfo();
       const {
         routerDirection,
@@ -416,14 +423,21 @@ See https://ionicframework.com/docs/vue/navigation#ionpage for more information.
 
         leavingViewItem.routerAnimation = animationBuilder;
 
-        await transition(
-          enteringEl,
-          leavingEl,
-          routerDirection,
-          ionRouter.canGoBack(),
-          false,
-          animationBuilder
-        );
+        /**
+         * After a swipe-back commit, the animation already ran during the
+         * gesture.  Skip the follow-up transition but still finalize DOM
+         * state (hide leaving, fire lifecycle) below.
+         */
+        if (!shouldSkipTransition) {
+          await transition(
+            enteringEl,
+            leavingEl,
+            routerDirection,
+            ionRouter.canGoBack(),
+            false,
+            animationBuilder
+          );
+        }
 
         leavingEl.classList.add("ion-page-hidden");
         leavingEl.setAttribute("aria-hidden", "true");

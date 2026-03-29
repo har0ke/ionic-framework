@@ -280,6 +280,11 @@ export const createIonRouter = (
     }
 
     pendingPlan = { plan, animation: animation ?? plan.animation };
+    // A plan-based navigation supersedes any pending external hint.
+    // Without this, a stale hint from a prior handleNavigate() call could
+    // leak into afterEach's external-fallthrough path if the plan
+    // mismatches (e.g. guard redirect), producing wrong direction/animation.
+    pendingHint = null;
 
     // void: afterEach handles all navigation outcomes (success, failure,
     // redirect). The promise is intentionally not awaited.
