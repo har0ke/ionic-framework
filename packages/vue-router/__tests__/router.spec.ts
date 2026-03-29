@@ -441,7 +441,7 @@ describe("createIonRouter integration", () => {
     expect(h.nav.getCurrentRouteInfo()?.routerDirection).toBe("forward");
   });
 
-  it("exposes current/leaving/canGoBack and tab registration snapshot", () => {
+  it("exposes current/backTarget/canGoBack and tab registration snapshot", () => {
     const h = createRouterHarness("/");
 
     h.nav.handleNavigate("/tabs/feed", "push", "forward");
@@ -450,7 +450,9 @@ describe("createIonRouter integration", () => {
     h.commitNavigation("/tabs/feed/details");
 
     expect(h.nav.getCurrentRouteInfo()?.pathname).toBe("/tabs/feed/details");
-    expect(h.nav.getLeavingRouteInfo()?.pathname).toBe("/tabs/feed");
+    // getBackTarget() is live-computed from the cursor: at cursor 1,
+    // back target is entries[0] = "/tabs/feed"
+    expect(h.nav.getBackTarget()).toBe("/tabs/feed");
     expect(h.nav.canGoBack()).toBe(true);
 
     h.nav.handleSetCurrentTab("feed", "/tabs/feed");
@@ -964,20 +966,76 @@ describe("createIonRouter integration", () => {
     expect(h.nav.getCurrentRouteInfo()).toBeUndefined();
   });
 
-  it("getLeavingRouteInfo falls back to currentRouteInfo before first leaving", () => {
+  it("getLeavingRouteInfo (deprecated) always returns currentRouteInfo", () => {
     const h = createRouterHarness("/");
 
     // Before any navigation, both are undefined
     expect(h.nav.getLeavingRouteInfo()).toBeUndefined();
 
-    // After first navigation, leaving falls back to current
+    // After first navigation, returns current
     h.commitNavigation("/");
     expect(h.nav.getLeavingRouteInfo()?.pathname).toBe("/");
 
-    // After second navigation, leaving is the previous current
+    // After second navigation, still returns current (not previous)
     h.nav.handleNavigate("/a", "push", "forward");
     h.commitNavigation("/a");
-    expect(h.nav.getLeavingRouteInfo()?.pathname).toBe("/");
+    expect(h.nav.getLeavingRouteInfo()?.pathname).toBe("/a");
+  });
+
+  it("getBackTarget returns undefined before first navigation", () => {
+    const h = createRouterHarness("/");
+    expect(h.nav.getBackTarget()).toBeUndefined();
+  });
+
+  it("getBackTarget returns previous entry when cursor > 0", () => {
+    const h = createRouterHarness("/");
+
+    h.commitNavigation("/");
+    h.nav.handleNavigate("/page2", "push", "forward");
+    h.commitNavigation("/page2");
+
+    // cursor = 1, entries = ["/", "/page2"] → back target = "/"
+    expect(h.nav.getBackTarget()).toBe("/");
+  });
+
+  it("getBackTarget returns undefined at tab root (cursor 0, entry matches rootHref)", () => {
+    const h = createRouterHarness("/tabs/feed");
+
+    h.nav.handleSetCurrentTab("feed", "/tabs/feed");
+    h.commitNavigation("/tabs/feed");
+
+    // cursor = 0, entry = "/tabs/feed", rootHref = "/tabs/feed" → blocked
+    expect(h.nav.getBackTarget()).toBeUndefined();
+  });
+
+  it("getBackTarget returns rootHref when cursor 0 entry differs from rootHref", () => {
+    const h = createRouterHarness("/tabs/feed/deep-link");
+
+    h.nav.handleSetCurrentTab("feed", "/tabs/feed");
+    h.commitNavigation("/tabs/feed/deep-link");
+
+    // cursor = 0, entry = "/tabs/feed/deep-link", rootHref = "/tabs/feed"
+    // entry ≠ rootHref → back target = rootHref
+    expect(h.nav.getBackTarget()).toBe("/tabs/feed");
+  });
+
+  it("getBackTarget reflects cursor position after goBack", () => {
+    const h = createRouterHarness("/");
+
+    h.commitNavigation("/");
+    h.nav.handleNavigate("/a", "push", "forward");
+    h.commitNavigation("/a");
+    h.nav.handleNavigate("/b", "push", "forward");
+    h.commitNavigation("/b");
+
+    // cursor = 2, entries = ["/", "/a", "/b"] → back target = "/a"
+    expect(h.nav.getBackTarget()).toBe("/a");
+
+    h.nav.goBack();
+    h.commitNavigation("/a");
+
+    // cursor = 1, entries = ["/", "/a", "/b"] → back target = "/"
+    expect(h.nav.getBackTarget()).toBe("/");
   });
 
   it("multiple registerHistoryChangeListener callbacks all fire", () => {

@@ -182,7 +182,6 @@ export const createIonRouter = (
   let pendingHint: PendingExternalHint | null = null;
 
   let currentRouteInfo: CurrentRouteInfo | undefined;
-  let leavingRouteInfo: CurrentRouteInfo | undefined;
 
   const historyChangeListeners: Array<() => void> = [];
   const warnedTraversalMethods = new Set<string>();
@@ -270,7 +269,6 @@ export const createIonRouter = (
           animation: effectiveAnimation,
         }
       );
-      leavingRouteInfo = leaving;
 
       dbg("executePlan → SAME-URL committed", {
         entering: entering.pathname,
@@ -584,7 +582,6 @@ export const createIonRouter = (
               animation: consumedPlan.animation ?? consumedPlan.plan.animation,
             }
           );
-          leavingRouteInfo = leaving;
 
           dbg("afterEach → PLAN COMMITTED", {
             entering: entering.pathname,
@@ -635,8 +632,6 @@ export const createIonRouter = (
         animation: consumedHint?.animation,
         action: consumedHint?.action ?? inferredAction,
       });
-
-      leavingRouteInfo = leaving;
 
       dbg("afterEach → EXTERNAL committed", {
         entering: entering.pathname,
@@ -808,15 +803,27 @@ export const createIonRouter = (
   const getCurrentRouteInfo = (): RouteInfo | undefined => currentRouteInfo;
 
   /**
-   * Return the route info for the page being navigated away from.
-   * Falls back to `currentRouteInfo` if no leaving info has been set yet
-   * (i.e. before the first navigation completes).
-   *
-   * Uses a cached value set when `CurrentRouteInfo` is produced, which is
-   * simpler than a live lookup and always reflects navigation-time state.
+   * @deprecated No internal callers remain. Kept for backward compatibility
+   * with any external code that injected `navManager` directly.
+   * Prefer `getCurrentRouteInfo()` or `getBackTarget()` instead.
    */
-  const getLeavingRouteInfo = (): RouteInfo | undefined =>
-    leavingRouteInfo ?? currentRouteInfo;
+  const getLeavingRouteInfo = (): RouteInfo | undefined => currentRouteInfo;
+
+  /**
+   * Live-computed pathname that a back navigation would target.
+   *
+   * Returns the pathname one cursor step back in the active context, or
+   * the effective default (rootHref for tabs, "/" otherwise) when at
+   * cursor 0 and the current entry differs from that default. Returns
+   * `undefined` when back is fully blocked.
+   *
+   * Used by IonRouterOutlet swipe-back gesture to find the entering DOM
+   * element for the transition animation. This is a live computation —
+   * it always reflects the current cursor position, unlike the snapshot
+   * `pushedByRoute` on `CurrentRouteInfo`.
+   */
+  const getBackTarget = (): string | undefined =>
+    contextHistory.derivePushedByRoute();
 
   /**
    * Check whether going back `deep` steps is possible in the active context.
@@ -874,10 +881,11 @@ export const createIonRouter = (
 
   return {
     handleNavigate,
-    getLeavingRouteInfo,
+    getLeavingRouteInfo, // deprecated — returns currentRouteInfo; prefer getBackTarget()
     handleNavigateBack,
     handleSetCurrentTab,
     getCurrentRouteInfo,
+    getBackTarget,
     canGoBack,
     canGoForward,
     navigate,

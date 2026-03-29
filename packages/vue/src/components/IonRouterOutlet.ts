@@ -126,6 +126,15 @@ export const IonRouterOutlet = /*@__PURE__*/ defineComponent({
       { deep: true }
     );
 
+    /**
+     * Cached back-target pathname for the duration of a single swipe
+     * gesture. Set in onStart(), consumed in onEnd(), cleared after use.
+     * Caching guarantees that onEnd() re-hides the exact same view that
+     * onStart() revealed, even in the (theoretical) case where a
+     * background navigation changes the live back target mid-gesture.
+     */
+    let swipeBackTarget: string | undefined;
+
     const canStart = () => {
       const config = getConfig();
       const swipeEnabled =
@@ -137,26 +146,37 @@ export const IonRouterOutlet = /*@__PURE__*/ defineComponent({
       if (!stack || stack.length <= 1) return false;
 
       /**
-       * We only want to outlet of the entering view
-       * to respond to this gesture, so check
-       * to make sure the view is in the outlet we want.
+       * Use the live-computed back target from the context history
+       * cursor to find the entering view. This ensures the correct
+       * page is identified regardless of which route info snapshot
+       * is current. We also verify the entering view exists in THIS
+       * outlet so that only the outlet owning the target view responds.
        */
-      const routeInfo = ionRouter.getLeavingRouteInfo();
+      const backTarget = ionRouter.getBackTarget();
+      if (!backTarget) return false;
+
       const enteringViewItem = viewStacks.findViewItemByRouteInfo(
-        { pathname: routeInfo.pushedByRoute || "" },
+        { pathname: backTarget },
         id
       );
 
       return !!enteringViewItem;
     };
+
     const onStart = async () => {
-      const routeInfo = ionRouter.getLeavingRouteInfo();
+      swipeBackTarget = ionRouter.getBackTarget();
+
+      const routeInfo = ionRouter.getCurrentRouteInfo();
       const { routerAnimation } = routeInfo;
+
       const enteringViewItem = viewStacks.findViewItemByRouteInfo(
-        { pathname: routeInfo.pushedByRoute || "" },
+        { pathname: swipeBackTarget || "" },
         id
       );
-      const leavingViewItem = viewStacks.findViewItemByRouteInfo(routeInfo, id);
+      const leavingViewItem = viewStacks.findViewItemByRouteInfo(
+        routeInfo,
+        id
+      );
 
       if (leavingViewItem) {
         let animationBuilder = routerAnimation;
@@ -202,18 +222,22 @@ export const IonRouterOutlet = /*@__PURE__*/ defineComponent({
         ionRouter.handleNavigateBack();
       } else {
         /**
-         * In the event that the swipe
-         * gesture was aborted, we should
-         * re-hide the page that was going to enter.
+         * In the event that the swipe gesture was aborted, re-hide
+         * the page that was revealed during onStart(). Uses the cached
+         * swipeBackTarget to guarantee we hide the same element that
+         * was shown, with a null guard in case the view was unmounted.
          */
-        const routeInfo = ionRouter.getCurrentRouteInfo();
         const enteringViewItem = viewStacks.findViewItemByRouteInfo(
-          { pathname: routeInfo.pushedByRoute || "" },
+          { pathname: swipeBackTarget || "" },
           id
         );
-        enteringViewItem.ionPageElement.setAttribute("aria-hidden", "true");
-        enteringViewItem.ionPageElement.classList.add("ion-page-hidden");
+        if (enteringViewItem?.ionPageElement) {
+          enteringViewItem.ionPageElement.setAttribute("aria-hidden", "true");
+          enteringViewItem.ionPageElement.classList.add("ion-page-hidden");
+        }
       }
+
+      swipeBackTarget = undefined;
     };
 
     watch(ionRouterOutlet, () => {
@@ -396,7 +420,7 @@ See https://ionicframework.com/docs/vue/navigation#ionpage for more information.
           enteringEl,
           leavingEl,
           routerDirection,
-          !!routeInfo.pushedByRoute,
+          ionRouter.canGoBack(),
           false,
           animationBuilder
         );
