@@ -1,6 +1,25 @@
 import { doc, win } from '@utils/browser';
+import { printIonWarning } from '@utils/logging';
 
 import { Keyboard, KeyboardResize } from '../native/keyboard';
+
+/**
+ * The webview resize that follows a keyboard hide is detected by the
+ * container returning to the height it had before the keyboard opened.
+ * `clientHeight` rounds to whole CSS pixels, so fractional device pixel
+ * ratios can leave the settled height off by a pixel — allow a small
+ * tolerance instead of requiring an exact match.
+ */
+const RESIZE_CONTAINER_HEIGHT_TOLERANCE = 2;
+
+/**
+ * Safety net for the resize promise: if the container never returns to the
+ * expected height (e.g. the device rotated while the keyboard was open, or a
+ * native overlay changed the webview frame), the promise resolves after this
+ * delay instead of leaving consumers such as ion-tab-bar and ion-footer
+ * blocked forever.
+ */
+const RESIZE_PROMISE_TIMEOUT_MS = 700;
 
 /**
  * The element that resizes when the keyboard opens
@@ -52,7 +71,7 @@ export const createKeyboardController = async (
 ): Promise<KeyboardController> => {
   let keyboardWillShowHandler: (() => void) | undefined;
   let keyboardWillHideHandler: (() => void) | undefined;
-  let keyboardVisible: boolean;
+  let keyboardVisible = false;
   /**
    * This lets us determine if the webview content
    * has resized as a result of the keyboard.
@@ -69,10 +88,13 @@ export const createKeyboardController = async (
        * the keyboard opens to guarantee the resize container is visible.
        * The resize container may not be visible if we compute this
        * as soon as the keyboard controller is created.
-       * We should only need to do this once to avoid additional clientHeight
-       * computations.
+       * We re-capture it on every keyboard show while the keyboard is
+       * closed so the baseline follows rotations and other window size
+       * changes. The `keyboardVisible` gate keeps additional
+       * keyboardWillShow events fired while the keyboard is already open
+       * (e.g. keyboard geometry changes) from capturing a shrunken height.
        */
-      if (initialResizeContainerHeight === undefined) {
+      if (!keyboardVisible) {
         initialResizeContainerHeight = getResizeContainerHeight(resizeMode);
       }
 
@@ -135,6 +157,22 @@ export const createKeyboardController = async (
      * and we need to listen for a resize.
      */
     return new Promise((resolve) => {
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+      /**
+       * Single exit for every way the wait can end (height restored or
+       * safety timeout): stop observing, clear the pending timer and
+       * resolve. Never leaves a ResizeObserver or timer behind.
+       */
+      const done = () => {
+        ro.disconnect();
+        if (timeoutId !== undefined) {
+          clearTimeout(timeoutId);
+          timeoutId = undefined;
+        }
+        resolve();
+      };
+
       const callback = () => {
         /**
          * As per the spec, the ResizeObserver
@@ -147,14 +185,14 @@ export const createKeyboardController = async (
          *
          * https://www.w3.org/TR/resize-observer/#intro
          */
-        if (containerElement.clientHeight === initialResizeContainerHeight) {
+        if (
+          Math.abs(containerElement.clientHeight - initialResizeContainerHeight) <= RESIZE_CONTAINER_HEIGHT_TOLERANCE
+        ) {
           /**
            * The resize happened, so stop listening
            * for resize on this element.
            */
-          ro.disconnect();
-
-          resolve();
+          done();
         }
       };
 
@@ -167,6 +205,24 @@ export const createKeyboardController = async (
        */
       const ro = new ResizeObserver(callback);
       ro.observe(containerElement);
+
+      /**
+       * The container may never return to the expected height, for example
+       * when the device rotated while the keyboard was open or when a
+       * native overlay changed the webview frame while it was covered.
+       * Resolve after a bounded delay so consumers awaiting this promise
+       * are never blocked indefinitely.
+       */
+      timeoutId = setTimeout(() => {
+        printIonWarning(
+          '[keyboard-controller] - The resize container did not return to its expected height within the timeout; resolving the resize wait anyway.',
+          {
+            expectedHeight: initialResizeContainerHeight,
+            currentHeight: containerElement.clientHeight,
+          }
+        );
+        done();
+      }, RESIZE_PROMISE_TIMEOUT_MS);
     });
   };
 

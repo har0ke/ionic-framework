@@ -52,7 +52,17 @@ export class Footer implements ComponentInterface {
   }
 
   async connectedCallback() {
+    /**
+     * The most recent keyboard state reported by the controller. A resize
+     * wait can finish late (e.g. via its safety timeout) after the keyboard
+     * has already reopened; such a stale continuation must not overwrite
+     * the newer state.
+     */
+    let latestKeyboardOpenState = false;
+
     this.keyboardCtrl = await createKeyboardController(async (keyboardOpen, waitForResize) => {
+      latestKeyboardOpenState = keyboardOpen;
+
       /**
        * If the keyboard is hiding, then we need to wait
        * for the webview to resize. Otherwise, the footer
@@ -62,7 +72,9 @@ export class Footer implements ComponentInterface {
         await waitForResize;
       }
 
-      this.keyboardVisible = keyboardOpen; // trigger re-render by updating state
+      if (latestKeyboardOpenState === keyboardOpen) {
+        this.keyboardVisible = keyboardOpen; // trigger re-render by updating state
+      }
     });
   }
 
