@@ -45,6 +45,20 @@ export const enableScrollAssist = (
   let hasKeyboardBeenPresentedForTextField = false;
 
   /**
+   * Token for the current focus session of this text field. jsSetFocus
+   * work that outlives the session (the pending scrollContent
+   * listener/timeout) must neither scroll nor steal focus back once the
+   * session has ended via focusout or unmount.
+   */
+  let activeSession: object | undefined;
+
+  /**
+   * Finishes pending jsSetFocus work early (in stale mode) so a blur or
+   * unmount cannot leave the input relocated or refocus it later.
+   */
+  let cancelPendingSetFocus: (() => void) | undefined;
+
+  /**
    * When adding scroll padding we need to know
    * how much of the viewport the keyboard obscures.
    * We do this by subtracting the keyboard height
@@ -105,6 +119,7 @@ export const enableScrollAssist = (
      * need to wait for the webview to resize, so we pass
      * "waitForResize: false".
      */
+    const session = activeSession;
     jsSetFocus(
       componentEl,
       inputEl,
@@ -114,7 +129,8 @@ export const enableScrollAssist = (
       addScrollPadding,
       disableClonedInput,
       platformHeight,
-      false
+      false,
+      () => activeSession !== undefined && activeSession === session
     );
   };
 
@@ -123,6 +139,11 @@ export const enableScrollAssist = (
    */
   const focusOut = () => {
     hasKeyboardBeenPresentedForTextField = false;
+    activeSession = undefined;
+    if (cancelPendingSetFocus) {
+      cancelPendingSetFocus();
+      cancelPendingSetFocus = undefined;
+    }
     win?.removeEventListener('ionKeyboardDidShow', keyboardShow);
     componentEl.removeEventListener('focusout', focusOut);
   };
@@ -143,6 +164,7 @@ export const enableScrollAssist = (
       inputEl.removeAttribute(SKIP_SCROLL_ASSIST);
       return;
     }
+    const session = (activeSession = {});
     jsSetFocus(
       componentEl,
       inputEl,
@@ -151,7 +173,12 @@ export const enableScrollAssist = (
       keyboardHeight,
       addScrollPadding,
       disableClonedInput,
-      platformHeight
+      platformHeight,
+      true,
+      () => activeSession === session,
+      (cancel) => {
+        cancelPendingSetFocus = cancel;
+      }
     );
 
     win?.addEventListener('ionKeyboardDidShow', keyboardShow);
@@ -162,6 +189,11 @@ export const enableScrollAssist = (
 
   return () => {
     componentEl.removeEventListener('focusin', focusIn);
+    activeSession = undefined;
+    if (cancelPendingSetFocus) {
+      cancelPendingSetFocus();
+      cancelPendingSetFocus = undefined;
+    }
     win?.removeEventListener('ionKeyboardDidShow', keyboardShow);
     componentEl.removeEventListener('focusout', focusOut);
   };
@@ -218,7 +250,19 @@ const jsSetFocus = async (
   enableScrollPadding: boolean,
   disableClonedInput = false,
   platformHeight = 0,
-  waitForResize = true
+  waitForResize = true,
+  /**
+   * Whether the focus session that started this call is still active.
+   * Checked around async gaps: once the session has ended
+   * (focusout/unmount), pending work must clean up without scrolling or
+   * re-focusing the input.
+   */
+  isSessionActive: () => boolean = () => true,
+  /**
+   * Lets the owning scroll-assist session finish the pending work armed
+   * below (scrollContent listener/timeout) early when the session ends.
+   */
+  registerPendingCancel?: (cancel: () => void) => void
 ) => {
   if (!contentEl && !footerEl) {
     return;
@@ -273,7 +317,19 @@ const jsSetFocus = async (
 
   if (typeof window !== 'undefined') {
     let scrollContentTimeout: ReturnType<typeof setTimeout>;
+    let finished = false;
+
     const scrollContent = async () => {
+      /**
+       * scrollContent is triggered by the keyboard event, its fallback
+       * timeout or an early cancellation (focusout/unmount) — whichever
+       * happens first. Only run once.
+       */
+      if (finished) {
+        return;
+      }
+      finished = true;
+
       // clean up listeners and timeouts
       if (scrollContentTimeout !== undefined) {
         clearTimeout(scrollContentTimeout);
@@ -282,25 +338,42 @@ const jsSetFocus = async (
       window.removeEventListener('ionKeyboardDidShow', doubleKeyboardEventListener);
       window.removeEventListener('ionKeyboardDidShow', scrollContent);
 
-      // scroll the input into place
-      if (contentEl) {
+      /**
+       * Scroll the input into place — unless the focus session already
+       * ended (the user blurred or the input unmounted before we ran).
+       */
+      if (contentEl && isSessionActive()) {
         await scrollByPoint(contentEl, 0, scrollData.scrollAmount, scrollData.scrollDuration);
       }
 
       // the scroll view is in the correct position now
-      // give the native text input focus
+      // restore the input that was relocated for the scroll no matter
+      // how we got here, so a cancelled wait cannot leave the cloned
+      // input and disabled pointer events behind
       relocateInput(componentEl, inputEl, false, scrollData.inputSafeY);
 
-      // ensure this is the focused input
-      setManualFocus(inputEl);
-
       /**
-       * When the input is about to be blurred
-       * we should set a timeout to remove
-       * any scroll padding.
+       * Re-check the session AFTER the awaited scroll: a blur that
+       * happened while scrolling must not have its focus stolen back.
        */
-      if (enableScrollPadding) {
-        setClearScrollPaddingListener(inputEl, contentEl, () => (currentPadding = 0));
+      if (isSessionActive()) {
+        // ensure this is the focused input
+        setManualFocus(inputEl);
+
+        /**
+         * When the input is about to be blurred
+         * we should set a timeout to remove
+         * any scroll padding.
+         */
+        if (enableScrollPadding) {
+          setClearScrollPaddingListener(inputEl, contentEl, () => (currentPadding = 0));
+        }
+      } else if (enableScrollPadding && contentEl) {
+        /**
+         * The input is already blurred, so the once-`focusout` clear
+         * listener could never fire — settle the scroll padding directly.
+         */
+        setScrollPadding(contentEl, 0, () => (currentPadding = 0));
       }
     };
 
@@ -311,6 +384,16 @@ const jsSetFocus = async (
 
     if (contentEl) {
       const scrollEl = await getScrollElement(contentEl);
+
+      /**
+       * The session may have ended while awaiting the scroll element (a
+       * blur can race this microtask gap). Finish in stale mode: restore
+       * the relocated input without scrolling or re-focusing.
+       */
+      if (!isSessionActive()) {
+        scrollContent();
+        return;
+      }
 
       /**
        * scrollData will only consider the amount we need
@@ -346,6 +429,13 @@ const jsSetFocus = async (
          * that does not support Ionic Keyboard Events
          */
         scrollContentTimeout = setTimeout(scrollContent, 1000);
+
+        /**
+         * Let the owning scroll-assist session finish this pending work
+         * early (in stale mode) when the input blurs or unmounts, so the
+         * fallback timeout cannot steal focus back later.
+         */
+        registerPendingCancel?.(scrollContent);
         return;
       }
     }
